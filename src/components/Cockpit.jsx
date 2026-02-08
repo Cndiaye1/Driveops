@@ -8,8 +8,11 @@ const POSTE_META = {
   PGC: { icon: "📦", label: "PGC" },
   FS: { icon: "🏷️", label: "FS" },
   LIV: { icon: "🚚", label: "LIV" },
-  FLEG: { icon: "🥬", label: "FLEG" },
-  SURG: { icon: "🧊", label: "SURG" },
+  MES: { icon: "🏬", label: "MES" },
+  LAD: { icon: "🏠", label: "LAD" },
+  "FLEG/SURG": { icon: "🥬", label: "FLEG/SURG" },
+  RE: { icon: "📥", label: "RE" },
+  NET: { icon: "🧽", label: "NET" },
   PAUSE: { icon: "☕", label: "PAUSE" },
 };
 
@@ -75,9 +78,8 @@ export default function Cockpit() {
     // ✅ UI feedback
     returnAlertUntil,
 
-    // ✅ auto-fill (prev block) + smart fill
+    // ✅ auto-fill missing from prev block (store)
     fillMissingAssignmentsFromPrevBlock,
-    fillMissingAssignmentsSmart,
   } = useDriveStore();
 
   const [clock, setClock] = useState(formatClock());
@@ -293,14 +295,7 @@ export default function Cockpit() {
       {blockModalOpen && (
         <div className="modalOverlay" onClick={() => setBlockModalOpen(false)}>
           <div className="modalCard card" onClick={(e) => e.stopPropagation()}>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 10,
-                alignItems: "center",
-              }}
-            >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
               <h2 style={{ margin: 0 }}>⏱️ Forcer un bloc</h2>
               <button className="btn ghost" onClick={() => setBlockModalOpen(false)} title="Fermer">
                 ✕
@@ -442,6 +437,8 @@ export default function Cockpit() {
                       style={{ width: "100%", marginBottom: 10 }}
                       onClick={() => {
                         setMenuOpen(false);
+                        const ok = window.confirm("Stop service ? (action critique)");
+                        if (!ok) return;
                         stopService();
                       }}
                     >
@@ -491,7 +488,7 @@ export default function Cockpit() {
         </div>
       </div>
 
-      {/* ✅ Postes manquants : BLOQUE la rotation + boutons auto-fill */}
+      {/* ✅ Postes manquants : BLOQUE la rotation + bouton auto-fill */}
       {missingAssignments.length > 0 && (
         <div className="card callout danger" onClick={(e) => e.stopPropagation()}>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -500,23 +497,13 @@ export default function Cockpit() {
             </div>
 
             {canUseTopActions && (
-              <>
-                <button
-                  className="btn ghost"
-                  onClick={() => fillMissingAssignmentsFromPrevBlock()}
-                  title="Copie le bloc précédent uniquement pour ceux qui n'ont rien"
-                >
-                  🪄 Remplir (bloc précédent)
-                </button>
-
-                <button
-                  className="btn ghost"
-                  onClick={() => fillMissingAssignmentsSmart()}
-                  title="Cherche le dernier poste connu dans les blocs précédents (remplit uniquement les vides)"
-                >
-                  ✨ Remplir (dernier poste connu)
-                </button>
-              </>
+              <button
+                className="btn ghost"
+                onClick={() => fillMissingAssignmentsFromPrevBlock()}
+                title="Copie le bloc précédent uniquement pour ceux qui n'ont rien"
+              >
+                🪄 Remplir automatiquement (copier bloc précédent)
+              </button>
             )}
           </div>
         </div>
@@ -534,9 +521,7 @@ export default function Cockpit() {
               <button
                 className="btn ghost"
                 onClick={() => {
-                  const ok = window.confirm(
-                    "Retourner au poste précédent tous ceux dont la pause est terminée ?"
-                  );
+                  const ok = window.confirm("Retourner au poste précédent tous ceux dont la pause est terminée ?");
                   if (!ok) return;
                   returnAllEndedPausesCurrentBlock();
                 }}
@@ -664,7 +649,11 @@ export default function Cockpit() {
 
           <div className="row noPrint" style={{ marginTop: 10 }}>
             <label className="pill" style={{ cursor: "pointer", userSelect: "none" }}>
-              <input type="checkbox" checked={onlyPaused} onChange={(e) => setOnlyPaused(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={onlyPaused}
+                onChange={(e) => setOnlyPaused(e.target.checked)}
+              />
               <span style={{ marginLeft: 8 }}>Voir seulement ceux en pause</span>
             </label>
 
@@ -764,7 +753,7 @@ export default function Cockpit() {
                         title="Changer de poste (urgence possible)"
                       >
                         <option value="">--</option>
-                        {postes.map((p) => (
+                        {(postes || []).map((p) => (
                           <option key={p} value={p}>
                             {p}
                           </option>
@@ -809,7 +798,9 @@ export default function Cockpit() {
         </div>
 
         {!wallMode && (
-          <div className="miniNote muted noPrint">Astuce : en urgence tu peux changer un poste à tout moment.</div>
+          <div className="miniNote muted noPrint">
+            Astuce : en urgence tu peux changer un poste à tout moment.
+          </div>
         )}
       </div>
     </div>

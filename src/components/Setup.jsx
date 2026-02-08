@@ -28,12 +28,15 @@ export default function Setup() {
     addPreparateurToList,
     removePreparateurFromList,
     addCoordoToList,
+    removeCoordoFromList,
 
     pauseWaveSize,
     setPauseWaveSize,
 
     startService,
     goCockpit,
+
+    resetDay,
     resetAll,
 
     serviceStartedAt,
@@ -42,6 +45,9 @@ export default function Setup() {
 
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
+
+  const [prepFilter, setPrepFilter] = useState("");
+  const [coordoFilter, setCoordoFilter] = useState("");
 
   const isServiceRunning = !!(dayStartedAt || serviceStartedAt);
 
@@ -85,6 +91,20 @@ export default function Setup() {
     [dayStaff]
   );
 
+  const filteredPreps = useMemo(() => {
+    const f = prepFilter.trim().toUpperCase();
+    const arr = (preparateursList || []).slice().sort();
+    if (!f) return arr;
+    return arr.filter((x) => String(x).toUpperCase().includes(f));
+  }, [preparateursList, prepFilter]);
+
+  const filteredCoordos = useMemo(() => {
+    const f = coordoFilter.trim().toUpperCase();
+    const arr = (coordosList || []).slice().sort();
+    if (!f) return arr;
+    return arr.filter((x) => String(x).toUpperCase().includes(f));
+  }, [coordosList, coordoFilter]);
+
   return (
     <div className="page">
       <div className="card">
@@ -98,18 +118,14 @@ export default function Setup() {
               </p>
             ) : (
               <p className="muted">
-                Étape {setupStep}/2 — Équipe du jour puis placement initial.
+                Étape {setupStep === 3 ? "Référentiels" : `${setupStep}/2`} — équipe puis placement initial.
               </p>
             )}
           </div>
 
           <div className="setupRight">
             <label className="muted small">Date</label>
-            <input
-              type="date"
-              value={dayDate}
-              onChange={(e) => setDayDate(e.target.value)}
-            />
+            <input type="date" value={dayDate} onChange={(e) => setDayDate(e.target.value)} />
           </div>
         </div>
 
@@ -130,6 +146,14 @@ export default function Setup() {
             2) Placement initial
           </button>
 
+          <button
+            className={`tab ${setupStep === 3 ? "active" : ""}`}
+            onClick={() => setSetupStep(3)}
+            title="Gérer le référentiel (turnover)"
+          >
+            ⚙️ Référentiels
+          </button>
+
           {isServiceRunning && (
             <button
               className="tab cta"
@@ -141,6 +165,7 @@ export default function Setup() {
           )}
         </div>
 
+        {/* ---------------- STEP 1 */}
         {setupStep === 1 && (
           <>
             <div className="section">
@@ -149,8 +174,10 @@ export default function Setup() {
               <div className="row">
                 <select value={coordinator} onChange={(e) => setCoordinator(e.target.value)}>
                   <option value="">-- Choisir le coordinateur --</option>
-                  {coordosList.map((c) => (
-                    <option key={c} value={c}>{c}</option>
+                  {(coordosList || []).slice().sort().map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -160,8 +187,16 @@ export default function Setup() {
                   value={newCoordo}
                   onChange={(e) => setNewCoordo(e.target.value)}
                   placeholder="Ajouter coordinateur (ex: AMINE)"
+                  onKeyDown={(e) => e.key === "Enter" && addCoordo()}
                 />
-                <button className="btn" onClick={addCoordo}>+ Ajouter</button>
+                <button className="btn" onClick={addCoordo}>
+                  + Ajouter
+                </button>
+              </div>
+
+              <div className="muted small" style={{ marginTop: 8 }}>
+                Astuce : pour gérer toute la liste (ajout/suppression + recherche), va dans{" "}
+                <b>⚙️ Référentiels</b>.
               </div>
             </div>
 
@@ -169,22 +204,21 @@ export default function Setup() {
               <h2>👥 Préparateurs présents</h2>
 
               <div className="listGrid">
-                {preparateursList.slice().sort().map((p) => {
-                  const checked = dayStaff.includes(p);
+                {(preparateursList || []).slice().sort().map((p) => {
+                  const checked = (dayStaff || []).includes(p);
                   return (
                     <div key={p} className={`listItem ${checked ? "checked" : ""}`}>
                       <label className="checkRow">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleDayStaff(p)}
-                        />
+                        <input type="checkbox" checked={checked} onChange={() => toggleDayStaff(p)} />
                         <span className="name">{p}</span>
                       </label>
 
                       <button
                         className="btn ghost mini"
-                        onClick={() => removePreparateurFromList(p)}
+                        onClick={() => {
+                          const ok = window.confirm(`Supprimer ${p} du référentiel ?`);
+                          if (ok) removePreparateurFromList(p);
+                        }}
                         title="Supprimer du référentiel"
                       >
                         ✕
@@ -199,8 +233,11 @@ export default function Setup() {
                   value={newPrep}
                   onChange={(e) => setNewPrep(e.target.value)}
                   placeholder="Ajouter préparateur (ex: SARAH)"
+                  onKeyDown={(e) => e.key === "Enter" && addPrep()}
                 />
-                <button className="btn" onClick={addPrep}>+ Ajouter</button>
+                <button className="btn" onClick={addPrep}>
+                  + Ajouter
+                </button>
               </div>
             </div>
 
@@ -212,33 +249,54 @@ export default function Setup() {
               </p>
 
               <div className="row">
-                <span className="muted" style={{ minWidth: 130 }}>Taille de vague</span>
+                <span className="muted" style={{ minWidth: 130 }}>
+                  Taille de vague
+                </span>
                 <select
                   value={pauseWaveSize || 1}
                   onChange={(e) => setPauseWaveSize(Number(e.target.value))}
                   title="Nombre max en pause simultanément"
                 >
                   {Array.from({ length: waveMax }, (_, i) => i + 1).map((v) => (
-                    <option key={v} value={v}>{v}</option>
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
                   ))}
                 </select>
               </div>
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={resetAll}>🧹 Reset</button>
-              <div style={{ flex: 1 }} />
               <button
-                className="btn primary"
-                disabled={!canGoStep2}
-                onClick={() => setSetupStep(2)}
+                className="btn ghost"
+                onClick={() => {
+                  const ok = window.confirm("Reset journée ? (garde les référentiels)");
+                  if (ok) resetDay();
+                }}
               >
+                🔄 Reset journée
+              </button>
+
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  const ok = window.confirm("Reset USINE ? (efface aussi les référentiels)");
+                  if (ok) resetAll();
+                }}
+              >
+                🧹 Reset usine
+              </button>
+
+              <div style={{ flex: 1 }} />
+
+              <button className="btn primary" disabled={!canGoStep2} onClick={() => setSetupStep(2)}>
                 ➡️ Suivant : Placement initial
               </button>
             </div>
           </>
         )}
 
+        {/* ---------------- STEP 2 */}
         {setupStep === 2 && (
           <>
             <div className="section">
@@ -262,8 +320,10 @@ export default function Setup() {
                       onChange={(e) => setInitialAssignment(nom, e.target.value)}
                     >
                       <option value="">-- Choisir poste --</option>
-                      {postes.map((p) => (
-                        <option key={p} value={p}>{p}</option>
+                      {(postes || []).map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
                       ))}
                     </select>
                   </div>
@@ -278,7 +338,9 @@ export default function Setup() {
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={() => setSetupStep(1)}>⬅️ Retour</button>
+              <button className="btn ghost" onClick={() => setSetupStep(1)}>
+                ⬅️ Retour
+              </button>
               <div style={{ flex: 1 }} />
 
               {!isServiceRunning && (
@@ -289,13 +351,162 @@ export default function Setup() {
             </div>
           </>
         )}
+
+        {/* ---------------- STEP 3 : REFERENTIELS */}
+        {setupStep === 3 && (
+          <>
+            <div className="section">
+              <h2>⚙️ Référentiels</h2>
+              <p className="muted">
+                Ici tu gères la liste <b>globale</b> des préparateurs et des coordos (turnover).
+                Cette liste est sauvegardée sur cet appareil (localStorage).
+              </p>
+
+              <div className="card" style={{ marginTop: 12 }}>
+                <h3 style={{ marginTop: 0 }}>👥 Préparateurs (référentiel)</h3>
+
+                <div className="row">
+                  <input
+                    value={prepFilter}
+                    onChange={(e) => setPrepFilter(e.target.value)}
+                    placeholder="Rechercher un préparateur…"
+                  />
+                </div>
+
+                <div className="row">
+                  <input
+                    value={newPrep}
+                    onChange={(e) => setNewPrep(e.target.value)}
+                    placeholder="Ajouter préparateur (ex: SARAH)"
+                    onKeyDown={(e) => e.key === "Enter" && addPrep()}
+                  />
+                  <button className="btn" onClick={addPrep}>
+                    + Ajouter
+                  </button>
+                </div>
+
+                <div className="listGrid" style={{ marginTop: 10 }}>
+                  {filteredPreps.map((p) => {
+                    const checked = (dayStaff || []).includes(p);
+                    return (
+                      <div key={p} className={`listItem ${checked ? "checked" : ""}`}>
+                        <label className="checkRow">
+                          <input type="checkbox" checked={checked} onChange={() => toggleDayStaff(p)} />
+                          <span className="name">{p}</span>
+                        </label>
+
+                        <button
+                          className="btn ghost mini"
+                          onClick={() => {
+                            const ok = window.confirm(
+                              `Supprimer ${p} du référentiel ?\n\n⚠️ Il sera aussi retiré de l'équipe du jour et des affectations.`
+                            );
+                            if (ok) removePreparateurFromList(p);
+                          }}
+                          title="Supprimer du référentiel"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="card" style={{ marginTop: 12 }}>
+                <h3 style={{ marginTop: 0 }}>👤 Coordos (référentiel)</h3>
+
+                <div className="row">
+                  <input
+                    value={coordoFilter}
+                    onChange={(e) => setCoordoFilter(e.target.value)}
+                    placeholder="Rechercher un coordo…"
+                  />
+                </div>
+
+                <div className="row">
+                  <input
+                    value={newCoordo}
+                    onChange={(e) => setNewCoordo(e.target.value)}
+                    placeholder="Ajouter coordo (ex: AMINE)"
+                    onKeyDown={(e) => e.key === "Enter" && addCoordo()}
+                  />
+                  <button className="btn" onClick={addCoordo}>
+                    + Ajouter
+                  </button>
+                </div>
+
+                <div className="listGrid" style={{ marginTop: 10 }}>
+                  {filteredCoordos.map((c) => {
+                    const isSelected = coordinator === c;
+                    return (
+                      <div key={c} className={`listItem ${isSelected ? "checked" : ""}`}>
+                        <div className="checkRow">
+                          <span className="name">{c}</span>
+                          {isSelected && (
+                            <span className="badge info" style={{ marginLeft: 10 }}>
+                              sélectionné
+                            </span>
+                          )}
+                        </div>
+
+                        <button
+                          className="btn ghost mini"
+                          onClick={() => {
+                            const ok = window.confirm(`Supprimer ${c} du référentiel ?`);
+                            if (ok) removeCoordoFromList(c);
+                          }}
+                          title="Supprimer du référentiel"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="muted small" style={{ marginTop: 8, opacity: 0.8 }}>
+                  Note : si tu supprimes le coordo actuellement sélectionné, il sera désélectionné.
+                </div>
+              </div>
+
+              <div className="row" style={{ marginTop: 14 }}>
+                <button className="btn ghost" onClick={() => setSetupStep(1)}>
+                  ⬅️ Retour Setup
+                </button>
+
+                <div style={{ flex: 1 }} />
+
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    const ok = window.confirm("Reset journée ? (garde les référentiels)");
+                    if (ok) resetDay();
+                  }}
+                >
+                  🔄 Reset journée
+                </button>
+
+                <button
+                  className="btn ghost"
+                  onClick={() => {
+                    const ok = window.confirm("Reset USINE ? (efface aussi les référentiels)");
+                    if (ok) resetAll();
+                  }}
+                >
+                  🧹 Reset usine
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="card">
         <h2>Résumé</h2>
         <div className="muted">
           Date: <b>{dayDate}</b> — Coordinateur: <b>{coordinator || "—"}</b> — Préparateurs:{" "}
-          <b>{dayStaff.length}</b> — Vague pause: <b>{pauseWaveSize || 1}</b>
+          <b>{(dayStaff || []).length}</b> — Vague pause: <b>{pauseWaveSize || 1}</b>
         </div>
       </div>
     </div>

@@ -1,10 +1,20 @@
 // src/store/useDriveStore.js
 import { create } from "zustand";
-import { timeToMinutes, buildBlocks, getFirstBlockId, getPrevBlockId } from "../utils/blocks";
 
 const LS_KEY = "driveops_v2";
 
 // ----------------- utils temps
+function timeToMinutes(hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  return h * 60 + m;
+}
+
+function minutesToTime(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -51,6 +61,48 @@ function blockStartTimestamp(dayDate, blockStartMin, useSystemDate) {
   const base = new Date(`${dateISO}T00:00:00`);
   base.setMinutes(base.getMinutes() + blockStartMin);
   return base.getTime();
+}
+
+/**
+ * ✅ buildBlocks minutes (rotationMinutes libre)
+ * id = minute de début "360" (06:00)
+ */
+function buildBlocks(horaires, rotationMinutes) {
+  const hs = Array.isArray(horaires) ? horaires : [];
+  if (hs.length < 2) return [];
+
+  const startMin = timeToMinutes(hs[0]);
+  const endMin = timeToMinutes(hs[hs.length - 1]);
+  if (!Number.isFinite(startMin) || !Number.isFinite(endMin) || endMin <= startMin) return [];
+
+  const step = Math.max(1, Math.floor(Number(rotationMinutes) || 0));
+  const blocks = [];
+
+  for (let t = startMin; t < endMin; t += step) {
+    const bStart = t;
+    const bEnd = Math.min(t + step, endMin);
+    blocks.push({
+      id: String(bStart),
+      start: minutesToTime(bStart),
+      end: minutesToTime(bEnd),
+      startMin: bStart,
+      endMin: bEnd,
+    });
+  }
+  return blocks;
+}
+
+function getFirstBlockId(horaires, rotationMinutes) {
+  const blocks = buildBlocks(horaires, rotationMinutes);
+  return blocks[0]?.id ?? "0";
+}
+
+function getPrevBlockId(horaires, rotationMinutes, currentBlockId) {
+  const blocks = buildBlocks(horaires, rotationMinutes);
+  const curId = String(currentBlockId ?? "");
+  const idx = blocks.findIndex((b) => b.id === curId);
+  if (idx <= 0) return null;
+  return blocks[idx - 1]?.id ?? null;
 }
 
 // ----------------- persistence
@@ -109,7 +161,7 @@ function migrateSavedState(saved) {
 const defaultState = {
   // UI
   screen: "setup",
-  setupStep: 1,
+  setupStep: 1, // 1=Equipe, 2=Placement, 3=Référentiels
 
   // Modes
   wallMode: false,
@@ -119,7 +171,9 @@ const defaultState = {
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
 
-  postes: ["PGC", "FS", "LIV", "FLEG", "SURG", "PAUSE"],
+  // ✅ TES POSTES (prod)
+  postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
+
   horaires: [
     "06:00",
     "07:00",
@@ -235,7 +289,8 @@ export const useDriveStore = create((set, get) => {
 
     setSetupStep: (setupStep) =>
       set((s) => {
-        const next = { ...s, setupStep };
+        const step = Number(setupStep) || 1;
+        const next = { ...s, setupStep: step };
         persist(next);
         return next;
       }),
@@ -294,6 +349,7 @@ export const useDriveStore = create((set, get) => {
 
         const prevMap = (s.assignments || {})[prevId] || {};
         const curMap = assignments[bid] || {};
+
         const nextMap = { ...curMap };
 
         for (const rawName of s.dayStaff || []) {
@@ -303,53 +359,6 @@ export const useDriveStore = create((set, get) => {
 
           const prevPoste = normalizePoste(prevMap[name]);
           if (prevPoste) nextMap[name] = prevPoste;
-        }
-
-        assignments[bid] = nextMap;
-
-        const next = { ...s, assignments, skipRotation, pausePrevPoste, currentBlockId: bid };
-        persist(next);
-        return next;
-      }),
-
-    /**
-     * ✅ SMART FILL : remplit les vides du bloc courant
-     * en cherchant le dernier poste connu dans les blocs précédents (plus robuste terrain).
-     */
-    fillMissingAssignmentsSmart: () =>
-      set((s) => {
-        const bid = normalizeBlockId(s.currentBlockId, s.horaires);
-        const blocks = buildBlocks(s.horaires, s.rotationMinutes);
-        if (!blocks.length) return s;
-
-        const curIdx = blocks.findIndex((b) => b.id === String(bid));
-        if (curIdx < 0) return s;
-
-        const { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
-
-        const curMap = assignments[bid] || {};
-        const nextMap = { ...curMap };
-
-        // Pour chaque personne vide, on remonte bloc par bloc jusqu'à trouver un poste non vide.
-        for (const rawName of s.dayStaff || []) {
-          const name = normalizeName(rawName);
-          const curPoste = normalizePoste(nextMap[name]);
-          if (curPoste) continue;
-
-          let found = "";
-          for (let i = curIdx - 1; i >= 0; i--) {
-            const prevId = blocks[i]?.id;
-            if (!prevId) continue;
-
-            const prevMap = (s.assignments || {})[prevId] || {};
-            const prevPoste = normalizePoste(prevMap[name]);
-            if (prevPoste) {
-              found = prevPoste;
-              break;
-            }
-          }
-
-          if (found) nextMap[name] = found;
         }
 
         assignments[bid] = nextMap;
@@ -417,8 +426,8 @@ export const useDriveStore = create((set, get) => {
     addPreparateurToList: (name) =>
       set((s) => {
         const n = normalizeName(name);
-        if (!n || s.preparateursList.includes(n)) return s;
-        const next = { ...s, preparateursList: [...s.preparateursList, n].sort() };
+        if (!n || (s.preparateursList || []).includes(n)) return s;
+        const next = { ...s, preparateursList: [...(s.preparateursList || []), n].sort() };
         persist(next);
         return next;
       }),
@@ -426,8 +435,8 @@ export const useDriveStore = create((set, get) => {
     removePreparateurFromList: (name) =>
       set((s) => {
         const upper = normalizeName(name);
-        const preparateursList = s.preparateursList.filter((x) => x !== upper);
-        const dayStaff = s.dayStaff.filter((x) => x !== upper);
+        const preparateursList = (s.preparateursList || []).filter((x) => x !== upper);
+        const dayStaff = (s.dayStaff || []).filter((x) => x !== upper);
 
         const assignments = { ...s.assignments };
         for (const bid of Object.keys(assignments)) {
@@ -476,8 +485,19 @@ export const useDriveStore = create((set, get) => {
     addCoordoToList: (name) =>
       set((s) => {
         const n = normalizeName(name);
-        if (!n || s.coordosList.includes(n)) return s;
-        const next = { ...s, coordosList: [...s.coordosList, n].sort() };
+        if (!n || (s.coordosList || []).includes(n)) return s;
+        const next = { ...s, coordosList: [...(s.coordosList || []), n].sort() };
+        persist(next);
+        return next;
+      }),
+
+    removeCoordoFromList: (name) =>
+      set((s) => {
+        const upper = normalizeName(name);
+        const coordosList = (s.coordosList || []).filter((x) => x !== upper);
+        const coordinator = s.coordinator === upper ? "" : s.coordinator;
+
+        const next = { ...s, coordosList, coordinator };
         persist(next);
         return next;
       }),
@@ -502,8 +522,8 @@ export const useDriveStore = create((set, get) => {
         const upper = normalizeName(name);
         if (!upper) return s;
 
-        const exists = s.dayStaff.includes(upper);
-        const dayStaff = exists ? s.dayStaff.filter((x) => x !== upper) : [...s.dayStaff, upper].sort();
+        const exists = (s.dayStaff || []).includes(upper);
+        const dayStaff = exists ? (s.dayStaff || []).filter((x) => x !== upper) : [...(s.dayStaff || []), upper].sort();
 
         const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
         const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
@@ -556,7 +576,7 @@ export const useDriveStore = create((set, get) => {
         : getFirstBlockId(s.horaires, s.rotationMinutes);
 
       const upperNom = normalizeName(nom);
-      const p = normalizePoste(poste);
+      const p = String(poste || ""); // keep raw for "FLEG/SURG"
       if (!upperNom) return;
 
       set((prev) => {
@@ -599,7 +619,7 @@ export const useDriveStore = create((set, get) => {
     // ---------- runtime
     startService: () =>
       set((s) => {
-        if (!s.coordinator || s.dayStaff.length === 0) return s;
+        if (!s.coordinator || (s.dayStaff || []).length === 0) return s;
 
         const blocks = buildBlocks(s.horaires, s.rotationMinutes);
         const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
@@ -617,14 +637,16 @@ export const useDriveStore = create((set, get) => {
         }
 
         const blockAssignments = assignments?.[first] || {};
-        const allHavePoste = s.dayStaff.every((n) => {
+
+        const allHavePoste = (s.dayStaff || []).every((n) => {
           const nn = normalizeName(n);
-          return blockAssignments[nn] && blockAssignments[nn] !== "";
+          const p = normalizePoste(blockAssignments[nn]);
+          return !!p;
         });
         if (!allHavePoste) return s;
 
         const pauseTakenAt = {};
-        s.dayStaff.forEach((n) => (pauseTakenAt[normalizeName(n)] = null));
+        (s.dayStaff || []).forEach((n) => (pauseTakenAt[normalizeName(n)] = null));
 
         const nowMs = Date.now();
         const blockStartedAt = sysStartMin != null ? blockStartTimestamp(s.dayDate, sysStartMin, true) : nowMs;
@@ -684,6 +706,7 @@ export const useDriveStore = create((set, get) => {
       if (!serviceOn) return;
 
       const currentId = normalizeBlockId(s.currentBlockId, s.horaires);
+
       const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
 
       if (shouldSyncToday) {
@@ -774,6 +797,7 @@ export const useDriveStore = create((set, get) => {
         if (missing.length > 0) return s;
 
         const currentIndex = blocks.findIndex((b) => b.id === curId);
+
         if (currentIndex < 0) {
           const next = {
             ...s,
@@ -812,8 +836,11 @@ export const useDriveStore = create((set, get) => {
           const upper = normalizeName(raw);
           const isSkipped = !!skipCur?.[upper];
 
-          if (isSkipped) carried[upper] = currentMap[upper] ?? "";
-          else carried[upper] = currentMap[upper] ?? existingNext[upper] ?? "";
+          if (isSkipped) {
+            carried[upper] = currentMap[upper] ?? "";
+          } else {
+            carried[upper] = currentMap[upper] ?? existingNext[upper] ?? "";
+          }
         }
 
         assignments[nextBlockId] = carried;
@@ -843,21 +870,24 @@ export const useDriveStore = create((set, get) => {
     setAssignment: (blockId, nom, poste) =>
       set((s) => {
         const upperNom = normalizeName(nom);
-        const p = normalizePoste(poste);
+        const p = String(poste || "");
         const bid = normalizeBlockId(blockId, s.horaires);
 
         const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
-        const prevPoste = normalizePoste(assignments?.[bid]?.[upperNom]);
 
-        if (p === "PAUSE" && prevPoste && prevPoste !== "PAUSE") {
+        const prevPoste = String(assignments?.[bid]?.[upperNom] || "").trim().toUpperCase();
+
+        if (p.trim().toUpperCase() === "PAUSE" && prevPoste && prevPoste !== "PAUSE") {
           pausePrevPoste[bid] = { ...(pausePrevPoste[bid] || {}), [upperNom]: prevPoste };
         }
 
         assignments[bid] = { ...assignments[bid], [upperNom]: p };
 
         let pauseTakenAt = s.pauseTakenAt || {};
-        if (p === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
-          if (!pauseTakenAt[upperNom]) pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
+        if (p.trim().toUpperCase() === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
+          if (!pauseTakenAt[upperNom]) {
+            pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
+          }
         }
 
         const next = { ...s, assignments, pausePrevPoste, pauseTakenAt };
@@ -879,7 +909,8 @@ export const useDriveStore = create((set, get) => {
         const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
         if (cur !== "PAUSE") return s;
 
-        const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
+        const prev = String(pausePrevPoste?.[bid]?.[upperNom] || "").trim().toUpperCase();
+
         assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
 
         const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
@@ -912,7 +943,7 @@ export const useDriveStore = create((set, get) => {
           if (!started) continue;
 
           if (now - started >= durMs) {
-            const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
+            const prev = String(pausePrevPoste?.[bid]?.[upperNom] || "").trim().toUpperCase();
             assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
             returnAlertUntil[upperNom] = Date.now() + 2 * 60 * 1000;
           }
@@ -923,6 +954,46 @@ export const useDriveStore = create((set, get) => {
         return next;
       }),
 
+    /**
+     * ✅ Reset JOURNÉE (prod terrain)
+     * - conserve les référentiels (préparateurs/coordos) + règles
+     * - remet service/affectations/pauses à zéro
+     */
+    resetDay: () =>
+      set((s) => {
+        const first = getFirstBlockId(s.horaires, s.rotationMinutes);
+
+        const next = {
+          ...s,
+          screen: "setup",
+          setupStep: 1,
+          wallMode: false,
+          printMode: false,
+
+          coordinator: "",
+          dayStaff: [],
+          dayStartedAt: null,
+          blockStartedAt: null,
+          serviceStartedAt: null,
+          currentBlockId: first,
+          rotationImminent: false,
+          rotationLocked: false,
+
+          assignments: {},
+          pauseTakenAt: {},
+          skipRotation: {},
+          pausePrevPoste: {},
+          returnAlertUntil: {},
+        };
+
+        persist(next);
+        return next;
+      }),
+
+    /**
+     * ✅ Reset USINE (dev)
+     * - efface tout (y compris référentiels)
+     */
     resetAll: () =>
       set(() => {
         persist(defaultState);
