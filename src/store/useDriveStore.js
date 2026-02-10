@@ -1,3 +1,4 @@
+// src/store/useDriveStore.js
 import { create } from "zustand";
 
 const LS_KEY = "driveops_v2";
@@ -329,6 +330,43 @@ export const useDriveStore = create((set, get) => {
     setSyncBlocksToSystemClock: (value) =>
       set((s) => {
         const next = { ...s, syncBlocksToSystemClock: !!value };
+        persist(next);
+        return next;
+      }),
+
+    /**
+     * ✅ Smart Fill (bloc courant)
+     * Remplit uniquement les vides du bloc courant
+     * en réutilisant les postes déjà utilisés sur ce même bloc (hors PAUSE).
+     */
+    fillMissingAssignmentsFromCurrentBlock: () =>
+      set((s) => {
+        const bid = normalizeBlockId(s.currentBlockId, s.horaires);
+        const { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
+
+        const curMap = assignments[bid] || {};
+        const staff = (s.dayStaff || []).map(normalizeName);
+
+        const missing = staff.filter((n) => !normalizePoste(curMap[n]));
+        if (missing.length === 0) return s;
+
+        const pool = staff
+          .map((n) => normalizePoste(curMap[n]))
+          .filter((p) => p && p !== "PAUSE");
+
+        if (pool.length === 0) return s;
+
+        const nextMap = { ...curMap };
+        let i = 0;
+
+        for (const n of missing) {
+          nextMap[n] = pool[i % pool.length];
+          i++;
+        }
+
+        assignments[bid] = nextMap;
+
+        const next = { ...s, assignments, skipRotation, pausePrevPoste, currentBlockId: bid };
         persist(next);
         return next;
       }),
