@@ -8,11 +8,8 @@ const POSTE_META = {
   PGC: { icon: "📦", label: "PGC" },
   FS: { icon: "🏷️", label: "FS" },
   LIV: { icon: "🚚", label: "LIV" },
-  MES: { icon: "🏬", label: "MES" },
-  LAD: { icon: "🏠", label: "LAD" },
-  "FLEG/SURG": { icon: "🥬", label: "FLEG/SURG" },
-  RE: { icon: "📥", label: "RE" },
-  NET: { icon: "🧽", label: "NET" },
+  FLEG: { icon: "🥬", label: "FLEG" },
+  SURG: { icon: "🧊", label: "SURG" },
   PAUSE: { icon: "☕", label: "PAUSE" },
 };
 
@@ -78,8 +75,9 @@ export default function Cockpit() {
     // ✅ UI feedback
     returnAlertUntil,
 
-    // ✅ auto-fill missing from prev block (store)
+    // ✅ smart fill (store)
     fillMissingAssignmentsFromPrevBlock,
+    fillMissingAssignmentsFromCurrentBlock, // ⚠️ à ajouter au store (patch plus bas)
   } = useDriveStore();
 
   const [clock, setClock] = useState(formatClock());
@@ -289,6 +287,37 @@ export default function Cockpit() {
   const currentSkipMap = skipRotation?.[String(currentBlockId)] || {};
   const showSkipUI = rotationImminent || rotationLocked;
 
+  const onStopService = useCallback(() => {
+    const ok = window.confirm("Stop service ?\n\n⚠️ Le timer et l’état runtime seront arrêtés.");
+    if (!ok) return;
+    stopService();
+  }, [stopService]);
+
+  const onReturnAllEnded = useCallback(() => {
+    if (!canUseTopActions) return;
+    const ok = window.confirm("Retourner au poste précédent tous ceux dont la pause est terminée ?");
+    if (!ok) return;
+    returnAllEndedPausesCurrentBlock();
+  }, [canUseTopActions, returnAllEndedPausesCurrentBlock]);
+
+  const onSmartFillPrev = useCallback(() => {
+    if (!canUseTopActions) return;
+    const ok = window.confirm(
+      "Remplir automatiquement les postes vides ?\n\n➡️ Source : bloc précédent\n✅ Ne modifie que les vides."
+    );
+    if (!ok) return;
+    fillMissingAssignmentsFromPrevBlock();
+  }, [canUseTopActions, fillMissingAssignmentsFromPrevBlock]);
+
+  const onSmartFillCurrent = useCallback(() => {
+    if (!canUseTopActions) return;
+    const ok = window.confirm(
+      "Remplir automatiquement les postes vides ?\n\n➡️ Source : postes déjà présents sur ce bloc (copie interne)\n✅ Ne modifie que les vides."
+    );
+    if (!ok) return;
+    fillMissingAssignmentsFromCurrentBlock?.();
+  }, [canUseTopActions, fillMissingAssignmentsFromCurrentBlock]);
+
   return (
     <div className="page" onClick={() => menuOpen && setMenuOpen(false)}>
       {/* ✅ MODAL “FORCER BLOC” */}
@@ -415,7 +444,7 @@ export default function Cockpit() {
                       position: "absolute",
                       right: 0,
                       top: "calc(100% + 8px)",
-                      width: 260,
+                      width: 280,
                       padding: 12,
                       zIndex: 9999,
                     }}
@@ -437,9 +466,7 @@ export default function Cockpit() {
                       style={{ width: "100%", marginBottom: 10 }}
                       onClick={() => {
                         setMenuOpen(false);
-                        const ok = window.confirm("Stop service ? (action critique)");
-                        if (!ok) return;
-                        stopService();
+                        onStopService();
                       }}
                     >
                       ⏹️ Stop service
@@ -488,7 +515,7 @@ export default function Cockpit() {
         </div>
       </div>
 
-      {/* ✅ Postes manquants : BLOQUE la rotation + bouton auto-fill */}
+      {/* ✅ Postes manquants : BLOQUE la rotation + smart fill */}
       {missingAssignments.length > 0 && (
         <div className="card callout danger" onClick={(e) => e.stopPropagation()}>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -497,13 +524,23 @@ export default function Cockpit() {
             </div>
 
             {canUseTopActions && (
-              <button
-                className="btn ghost"
-                onClick={() => fillMissingAssignmentsFromPrevBlock()}
-                title="Copie le bloc précédent uniquement pour ceux qui n'ont rien"
-              >
-                🪄 Remplir automatiquement (copier bloc précédent)
-              </button>
+              <>
+                <button
+                  className="btn ghost"
+                  onClick={onSmartFillPrev}
+                  title="Copie le bloc précédent uniquement pour ceux qui n'ont rien"
+                >
+                  🪄 Remplir (copier bloc précédent)
+                </button>
+
+                <button
+                  className="btn ghost"
+                  onClick={onSmartFillCurrent}
+                  title="Remplit les vides à partir des postes déjà présents sur ce bloc (répartition simple)"
+                >
+                  🧠 Smart Fill (bloc courant)
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -518,15 +555,7 @@ export default function Cockpit() {
             </div>
 
             {canUseTopActions && (
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  const ok = window.confirm("Retourner au poste précédent tous ceux dont la pause est terminée ?");
-                  if (!ok) return;
-                  returnAllEndedPausesCurrentBlock();
-                }}
-                title="Retour poste précédent (pause terminée)"
-              >
+              <button className="btn ghost" onClick={onReturnAllEnded} title="Retour poste précédent (pause terminée)">
                 ↩ Retour poste (tous)
               </button>
             )}
@@ -581,14 +610,13 @@ export default function Cockpit() {
                     onChange={(e) => setPauseWaveSize(Number(e.target.value))}
                     title="Nombre de personnes max envoyées en pause en même temps"
                   >
-                    {Array.from(
-                      { length: Math.max(1, Math.min((dayStaff || []).length, 6)) },
-                      (_, i) => i + 1
-                    ).map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
+                    {Array.from({ length: Math.max(1, Math.min((dayStaff || []).length, 6)) }, (_, i) => i + 1).map(
+                      (v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      )
+                    )}
                   </select>
                 </div>
 
@@ -649,11 +677,7 @@ export default function Cockpit() {
 
           <div className="row noPrint" style={{ marginTop: 10 }}>
             <label className="pill" style={{ cursor: "pointer", userSelect: "none" }}>
-              <input
-                type="checkbox"
-                checked={onlyPaused}
-                onChange={(e) => setOnlyPaused(e.target.checked)}
-              />
+              <input type="checkbox" checked={onlyPaused} onChange={(e) => setOnlyPaused(e.target.checked)} />
               <span style={{ marginLeft: 8 }}>Voir seulement ceux en pause</span>
             </label>
 
@@ -732,16 +756,11 @@ export default function Cockpit() {
                     </div>
                   )}
 
-                  {!pauseDue &&
-                    !rotationLocked &&
-                    rotationImminent &&
-                    poste &&
-                    poste !== "PAUSE" &&
-                    !isSkipped && (
-                      <div className="cardAlert">
-                        <span className="badge warn">⚠️ Rotation imminente</span>
-                      </div>
-                    )}
+                  {!pauseDue && !rotationLocked && rotationImminent && poste && poste !== "PAUSE" && !isSkipped && (
+                    <div className="cardAlert">
+                      <span className="badge warn">⚠️ Rotation imminente</span>
+                    </div>
+                  )}
                 </div>
 
                 {canEdit && (
@@ -753,7 +772,7 @@ export default function Cockpit() {
                         title="Changer de poste (urgence possible)"
                       >
                         <option value="">--</option>
-                        {(postes || []).map((p) => (
+                        {postes.map((p) => (
                           <option key={p} value={p}>
                             {p}
                           </option>
@@ -797,11 +816,7 @@ export default function Cockpit() {
           })}
         </div>
 
-        {!wallMode && (
-          <div className="miniNote muted noPrint">
-            Astuce : en urgence tu peux changer un poste à tout moment.
-          </div>
-        )}
+        {!wallMode && <div className="miniNote muted noPrint">Astuce : en urgence tu peux changer un poste à tout moment.</div>}
       </div>
     </div>
   );

@@ -1,4 +1,3 @@
-// src/store/useDriveStore.js
 import { create } from "zustand";
 
 const LS_KEY = "driveops_v2";
@@ -161,7 +160,7 @@ function migrateSavedState(saved) {
 const defaultState = {
   // UI
   screen: "setup",
-  setupStep: 1, // 1=Equipe, 2=Placement, 3=Référentiels
+  setupStep: 1,
 
   // Modes
   wallMode: false,
@@ -171,7 +170,7 @@ const defaultState = {
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
 
-  // ✅ TES POSTES (prod)
+  // ✅ tes postes
   postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
 
   horaires: [
@@ -289,8 +288,7 @@ export const useDriveStore = create((set, get) => {
 
     setSetupStep: (setupStep) =>
       set((s) => {
-        const step = Number(setupStep) || 1;
-        const next = { ...s, setupStep: step };
+        const next = { ...s, setupStep };
         persist(next);
         return next;
       }),
@@ -426,8 +424,8 @@ export const useDriveStore = create((set, get) => {
     addPreparateurToList: (name) =>
       set((s) => {
         const n = normalizeName(name);
-        if (!n || (s.preparateursList || []).includes(n)) return s;
-        const next = { ...s, preparateursList: [...(s.preparateursList || []), n].sort() };
+        if (!n || s.preparateursList.includes(n)) return s;
+        const next = { ...s, preparateursList: [...s.preparateursList, n].sort() };
         persist(next);
         return next;
       }),
@@ -435,8 +433,8 @@ export const useDriveStore = create((set, get) => {
     removePreparateurFromList: (name) =>
       set((s) => {
         const upper = normalizeName(name);
-        const preparateursList = (s.preparateursList || []).filter((x) => x !== upper);
-        const dayStaff = (s.dayStaff || []).filter((x) => x !== upper);
+        const preparateursList = s.preparateursList.filter((x) => x !== upper);
+        const dayStaff = s.dayStaff.filter((x) => x !== upper);
 
         const assignments = { ...s.assignments };
         for (const bid of Object.keys(assignments)) {
@@ -485,8 +483,8 @@ export const useDriveStore = create((set, get) => {
     addCoordoToList: (name) =>
       set((s) => {
         const n = normalizeName(name);
-        if (!n || (s.coordosList || []).includes(n)) return s;
-        const next = { ...s, coordosList: [...(s.coordosList || []), n].sort() };
+        if (!n || s.coordosList.includes(n)) return s;
+        const next = { ...s, coordosList: [...s.coordosList, n].sort() };
         persist(next);
         return next;
       }),
@@ -494,10 +492,9 @@ export const useDriveStore = create((set, get) => {
     removeCoordoFromList: (name) =>
       set((s) => {
         const upper = normalizeName(name);
-        const coordosList = (s.coordosList || []).filter((x) => x !== upper);
-        const coordinator = s.coordinator === upper ? "" : s.coordinator;
-
-        const next = { ...s, coordosList, coordinator };
+        const coordosList = s.coordosList.filter((x) => x !== upper);
+        const nextCoordinator = s.coordinator === upper ? "" : s.coordinator;
+        const next = { ...s, coordosList, coordinator: nextCoordinator };
         persist(next);
         return next;
       }),
@@ -522,8 +519,8 @@ export const useDriveStore = create((set, get) => {
         const upper = normalizeName(name);
         if (!upper) return s;
 
-        const exists = (s.dayStaff || []).includes(upper);
-        const dayStaff = exists ? (s.dayStaff || []).filter((x) => x !== upper) : [...(s.dayStaff || []), upper].sort();
+        const exists = s.dayStaff.includes(upper);
+        const dayStaff = exists ? s.dayStaff.filter((x) => x !== upper) : [...s.dayStaff, upper].sort();
 
         const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
         const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
@@ -576,7 +573,7 @@ export const useDriveStore = create((set, get) => {
         : getFirstBlockId(s.horaires, s.rotationMinutes);
 
       const upperNom = normalizeName(nom);
-      const p = String(poste || ""); // keep raw for "FLEG/SURG"
+      const p = normalizePoste(poste);
       if (!upperNom) return;
 
       set((prev) => {
@@ -619,7 +616,7 @@ export const useDriveStore = create((set, get) => {
     // ---------- runtime
     startService: () =>
       set((s) => {
-        if (!s.coordinator || (s.dayStaff || []).length === 0) return s;
+        if (!s.coordinator || s.dayStaff.length === 0) return s;
 
         const blocks = buildBlocks(s.horaires, s.rotationMinutes);
         const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
@@ -638,15 +635,14 @@ export const useDriveStore = create((set, get) => {
 
         const blockAssignments = assignments?.[first] || {};
 
-        const allHavePoste = (s.dayStaff || []).every((n) => {
+        const allHavePoste = s.dayStaff.every((n) => {
           const nn = normalizeName(n);
-          const p = normalizePoste(blockAssignments[nn]);
-          return !!p;
+          return blockAssignments[nn] && blockAssignments[nn] !== "";
         });
         if (!allHavePoste) return s;
 
         const pauseTakenAt = {};
-        (s.dayStaff || []).forEach((n) => (pauseTakenAt[normalizeName(n)] = null));
+        s.dayStaff.forEach((n) => (pauseTakenAt[normalizeName(n)] = null));
 
         const nowMs = Date.now();
         const blockStartedAt = sysStartMin != null ? blockStartTimestamp(s.dayDate, sysStartMin, true) : nowMs;
@@ -792,9 +788,11 @@ export const useDriveStore = create((set, get) => {
         const missing = (s.dayStaff || []).filter((raw) => {
           const n = normalizeName(raw);
           const p = normalizePoste(currentMap[n]);
-          return !p;
+          return !p; // vide => bloquant
         });
-        if (missing.length > 0) return s;
+        if (missing.length > 0) {
+          return s;
+        }
 
         const currentIndex = blocks.findIndex((b) => b.id === curId);
 
@@ -836,11 +834,8 @@ export const useDriveStore = create((set, get) => {
           const upper = normalizeName(raw);
           const isSkipped = !!skipCur?.[upper];
 
-          if (isSkipped) {
-            carried[upper] = currentMap[upper] ?? "";
-          } else {
-            carried[upper] = currentMap[upper] ?? existingNext[upper] ?? "";
-          }
+          if (isSkipped) carried[upper] = currentMap[upper] ?? "";
+          else carried[upper] = currentMap[upper] ?? existingNext[upper] ?? "";
         }
 
         assignments[nextBlockId] = carried;
@@ -870,21 +865,21 @@ export const useDriveStore = create((set, get) => {
     setAssignment: (blockId, nom, poste) =>
       set((s) => {
         const upperNom = normalizeName(nom);
-        const p = String(poste || "");
+        const p = normalizePoste(poste);
         const bid = normalizeBlockId(blockId, s.horaires);
 
         const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
 
-        const prevPoste = String(assignments?.[bid]?.[upperNom] || "").trim().toUpperCase();
+        const prevPoste = normalizePoste(assignments?.[bid]?.[upperNom]);
 
-        if (p.trim().toUpperCase() === "PAUSE" && prevPoste && prevPoste !== "PAUSE") {
+        if (p === "PAUSE" && prevPoste && prevPoste !== "PAUSE") {
           pausePrevPoste[bid] = { ...(pausePrevPoste[bid] || {}), [upperNom]: prevPoste };
         }
 
         assignments[bid] = { ...assignments[bid], [upperNom]: p };
 
         let pauseTakenAt = s.pauseTakenAt || {};
-        if (p.trim().toUpperCase() === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
+        if (p === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
           if (!pauseTakenAt[upperNom]) {
             pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
           }
@@ -909,7 +904,7 @@ export const useDriveStore = create((set, get) => {
         const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
         if (cur !== "PAUSE") return s;
 
-        const prev = String(pausePrevPoste?.[bid]?.[upperNom] || "").trim().toUpperCase();
+        const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
 
         assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
 
@@ -943,7 +938,7 @@ export const useDriveStore = create((set, get) => {
           if (!started) continue;
 
           if (now - started >= durMs) {
-            const prev = String(pausePrevPoste?.[bid]?.[upperNom] || "").trim().toUpperCase();
+            const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
             assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
             returnAlertUntil[upperNom] = Date.now() + 2 * 60 * 1000;
           }
@@ -955,23 +950,27 @@ export const useDriveStore = create((set, get) => {
       }),
 
     /**
-     * ✅ Reset JOURNÉE (prod terrain)
-     * - conserve les référentiels (préparateurs/coordos) + règles
-     * - remet service/affectations/pauses à zéro
+     * ✅ Reset JOURNÉE (prod/terrain)
+     * -> garde les référentiels (préparateurs/coordos/postes/règles/horaires)
      */
     resetDay: () =>
       set((s) => {
         const first = getFirstBlockId(s.horaires, s.rotationMinutes);
-
         const next = {
           ...s,
+
+          // UI / modes
           screen: "setup",
           setupStep: 1,
           wallMode: false,
           printMode: false,
 
+          // journée
+          dayDate: todayISO(),
           coordinator: "",
           dayStaff: [],
+
+          // runtime
           dayStartedAt: null,
           blockStartedAt: null,
           serviceStartedAt: null,
@@ -979,11 +978,15 @@ export const useDriveStore = create((set, get) => {
           rotationImminent: false,
           rotationLocked: false,
 
+          // data runtime
           assignments: {},
           pauseTakenAt: {},
           skipRotation: {},
           pausePrevPoste: {},
           returnAlertUntil: {},
+
+          // safety: on revient en auto
+          syncBlocksToSystemClock: true,
         };
 
         persist(next);
@@ -991,10 +994,10 @@ export const useDriveStore = create((set, get) => {
       }),
 
     /**
-     * ✅ Reset USINE (dev)
-     * - efface tout (y compris référentiels)
+     * ✅ Reset USINE (dev only)
+     * -> remet ABSOLUMENT tout à defaultState
      */
-    resetAll: () =>
+    resetFactory: () =>
       set(() => {
         persist(defaultState);
         return defaultState;
