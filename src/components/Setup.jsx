@@ -1,15 +1,18 @@
-import React, { useMemo, useState } from "react";
+// src/pages/Setup.jsx
+import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { getFirstBlockId } from "../utils/blocks";
 
 export default function Setup() {
   const {
-    // ✅ API
+    // API
     siteCode,
     setSiteCode,
     apiStatus,
     apiError,
     hydrateFromApi,
+    pushToApi,
+    ensureSessionLoaded,
 
     setupStep,
     setSetupStep,
@@ -42,7 +45,7 @@ export default function Setup() {
 
     startService,
     goCockpit,
-    resetAll,
+    resetDay, // ✅ ton store expose resetDay, pas resetAll
 
     serviceStartedAt,
     dayStartedAt,
@@ -51,6 +54,12 @@ export default function Setup() {
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
+  // ✅ charge la session dès l’arrivée sur Setup (site+date)
+  useEffect(() => {
+    ensureSessionLoaded?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const isServiceRunning = !!(dayStartedAt || serviceStartedAt);
 
   const setupBlockId = useMemo(
@@ -58,16 +67,21 @@ export default function Setup() {
     [horaires, rotationMinutes]
   );
 
-  // si service en cours, on bosse sur le bloc en cours, sinon premier bloc
   const effectiveBlockId = isServiceRunning ? String(currentBlockId ?? "") : setupBlockId;
-
   const blockAssignments = assignments?.[effectiveBlockId] || {};
   const selectedStaff = useMemo(() => (dayStaff || []).slice().sort(), [dayStaff]);
 
-  const hasCoordinator = String(coordinator || "").trim() !== "";
+  // ✅ normalisation identique au store
+  const norm = (s) => String(s || "").trim().toUpperCase();
+
+  const hasCoordinator = norm(coordinator) !== "";
   const hasStaff = (dayStaff || []).length > 0;
 
-  const allHavePoste = selectedStaff.every((nom) => blockAssignments[nom] && blockAssignments[nom] !== "");
+  // ✅ FIX: lire les postes avec la clé normalisée
+  const allHavePoste = selectedStaff.every((nom) => {
+    const key = norm(nom);
+    return blockAssignments[key] && blockAssignments[key] !== "";
+  });
 
   const canGoStep2 = hasCoordinator && hasStaff;
   const canStart = hasCoordinator && hasStaff && allHavePoste;
@@ -86,7 +100,10 @@ export default function Setup() {
     setNewCoordo("");
   }
 
-  const waveMax = useMemo(() => Math.max(1, Math.min((dayStaff?.length || 1), 6)), [dayStaff]);
+  const waveMax = useMemo(
+    () => Math.max(1, Math.min(dayStaff?.length || 1, 6)),
+    [dayStaff]
+  );
 
   return (
     <div className="page">
@@ -94,41 +111,64 @@ export default function Setup() {
         <div className="setupHeader">
           <div>
             <h1>🚗 DriveOps — Configuration de la journée</h1>
-
             {isServiceRunning ? (
-              <p className="muted">✅ Service en cours — tu peux modifier et revenir au cockpit sans relancer le timer.</p>
+              <p className="muted">✅ Service en cours — tu peux modifier et revenir au cockpit.</p>
             ) : (
               <p className="muted">Étape {setupStep}/2 — Équipe du jour puis placement initial.</p>
             )}
           </div>
 
-          {/* ✅ Site + date + sync */}
-          <div className="setupRight" style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
+          {/* Site + date + sync */}
+          <div
+            className="setupRight"
+            style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}
+          >
             <div>
               <label className="muted small">Site code</label>
-              <input value={siteCode || ""} onChange={(e) => setSiteCode(e.target.value)} placeholder="MELUN" />
+              <input
+                value={siteCode || ""}
+                onChange={(e) => setSiteCode(e.target.value)}
+                placeholder="MELUN"
+              />
             </div>
 
             <div>
               <label className="muted small">Date</label>
-              <input type="date" value={dayDate} onChange={(e) => setDayDate(e.target.value)} />
+              <input
+                type="date"
+                value={dayDate}
+                onChange={(e) => setDayDate(e.target.value)}
+              />
             </div>
 
-            <button className="btn ghost" onClick={hydrateFromApi} title="Recharge remote (remote écrase local)">
-              🔄 Sync
+            <button
+              className="btn ghost"
+              onClick={hydrateFromApi}
+              title="Sync (remote écrase local, sauf remote vide)"
+            >
+              🔄 Synchronisation
             </button>
 
-            {apiStatus !== "idle" && (
-              <div className="muted small" style={{ minWidth: 200 }}>
-                API: <b>{apiStatus}</b>
-                {apiError ? <span style={{ opacity: 0.8 }}> — {apiError}</span> : null}
-              </div>
-            )}
+            <button
+              className="btn ghost"
+              onClick={pushToApi}
+              title="Sauvegarde (local -> remote)"
+            >
+              💾 Push
+            </button>
+
+            <div className="muted small" style={{ minWidth: 220 }}>
+              API: <b>{apiStatus}</b>
+              {apiError ? <span style={{ opacity: 0.85 }}> — {apiError}</span> : null}
+            </div>
           </div>
         </div>
 
         <div className="wizardTabs">
-          <button className={`tab ${setupStep === 1 ? "active" : ""}`} onClick={() => setSetupStep(1)}>
+          <button
+            className={`tab ${setupStep === 1 ? "active" : ""}`}
+            onClick={() => setSetupStep(1)}
+          >
             1) Équipe du jour
           </button>
 
@@ -136,13 +176,13 @@ export default function Setup() {
             className={`tab ${setupStep === 2 ? "active" : ""}`}
             onClick={() => canGoStep2 && setSetupStep(2)}
             disabled={!canGoStep2}
-            title="Choisis un coordinateur et au moins un préparateur"
+            title={!canGoStep2 ? "Choisis un coordinateur et au moins un préparateur" : ""}
           >
             2) Placement initial
           </button>
 
           {isServiceRunning && (
-            <button className="tab cta" onClick={goCockpit} title="Retourner au cockpit (sans relancer le service)">
+            <button className="tab cta" onClick={goCockpit} title="Retour cockpit">
               🧭 Cockpit
             </button>
           )}
@@ -156,11 +196,14 @@ export default function Setup() {
               <div className="row">
                 <select value={coordinator} onChange={(e) => setCoordinator(e.target.value)}>
                   <option value="">-- Choisir le coordinateur --</option>
-                  {coordosList.slice().sort().map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
+                  {coordosList
+                    .slice()
+                    .sort()
+                    .map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -175,18 +218,24 @@ export default function Setup() {
                 </button>
               </div>
 
-              {/* ✅ gestion liste coordos */}
               <div className="listGrid" style={{ marginTop: 10 }}>
-                {coordosList.slice().sort().map((c) => (
-                  <div key={c} className="listItem">
-                    <div className="checkRow">
-                      <span className="name">{c}</span>
+                {coordosList
+                  .slice()
+                  .sort()
+                  .map((c) => (
+                    <div key={c} className="listItem">
+                      <div className="checkRow">
+                        <span className="name">{c}</span>
+                      </div>
+                      <button
+                        className="btn ghost mini"
+                        onClick={() => removeCoordoFromList(c)}
+                        title="Supprimer"
+                      >
+                        ✕
+                      </button>
                     </div>
-                    <button className="btn ghost mini" onClick={() => removeCoordoFromList(c)} title="Supprimer du référentiel">
-                      ✕
-                    </button>
-                  </div>
-                ))}
+                  ))}
               </div>
             </div>
 
@@ -194,25 +243,32 @@ export default function Setup() {
               <h2>👥 Préparateurs présents</h2>
 
               <div className="listGrid">
-                {preparateursList.slice().sort().map((p) => {
-                  const checked = dayStaff.includes(p);
-                  return (
-                    <div key={p} className={`listItem ${checked ? "checked" : ""}`}>
-                      <label className="checkRow">
-                        <input type="checkbox" checked={checked} onChange={() => toggleDayStaff(p)} />
-                        <span className="name">{p}</span>
-                      </label>
+                {preparateursList
+                  .slice()
+                  .sort()
+                  .map((p) => {
+                    const checked = dayStaff.includes(p);
+                    return (
+                      <div key={p} className={`listItem ${checked ? "checked" : ""}`}>
+                        <label className="checkRow">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleDayStaff(p)}
+                          />
+                          <span className="name">{p}</span>
+                        </label>
 
-                      <button
-                        className="btn ghost mini"
-                        onClick={() => removePreparateurFromList(p)}
-                        title="Supprimer du référentiel"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  );
-                })}
+                        <button
+                          className="btn ghost mini"
+                          onClick={() => removePreparateurFromList(p)}
+                          title="Supprimer"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    );
+                  })}
               </div>
 
               <div className="row">
@@ -229,9 +285,7 @@ export default function Setup() {
 
             <div className="section">
               <h2>☕ Pauses (vagues)</h2>
-              <p className="muted">
-                Définit le nombre de personnes max envoyées en pause en même temps. (Modifiable aussi dans le cockpit si besoin terrain.)
-              </p>
+              <p className="muted">Définit le nombre max envoyés en pause en même temps.</p>
 
               <div className="row">
                 <span className="muted" style={{ minWidth: 130 }}>
@@ -240,7 +294,6 @@ export default function Setup() {
                 <select
                   value={pauseWaveSize || 1}
                   onChange={(e) => setPauseWaveSize(Number(e.target.value))}
-                  title="Nombre max en pause simultanément"
                 >
                   {Array.from({ length: waveMax }, (_, i) => i + 1).map((v) => (
                     <option key={v} value={v}>
@@ -252,11 +305,15 @@ export default function Setup() {
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={resetAll}>
+              <button className="btn ghost" onClick={resetDay}>
                 🧹 Reset journée
               </button>
               <div style={{ flex: 1 }} />
-              <button className="btn primary" disabled={!canGoStep2} onClick={() => setSetupStep(2)}>
+              <button
+                className="btn primary"
+                disabled={!canGoStep2}
+                onClick={() => setSetupStep(2)}
+              >
                 ➡️ Suivant : Placement initial
               </button>
             </div>
@@ -269,28 +326,30 @@ export default function Setup() {
               <h2>📍 Placement initial</h2>
               <p className="muted">
                 {isServiceRunning
-                  ? "Service en cours : ajuste si besoin (sur le bloc en cours) puis reviens au cockpit."
+                  ? "Service en cours : ajuste puis reviens au cockpit."
                   : "Chaque préparateur doit avoir un poste pour démarrer le service."}
               </p>
 
-              <div className="muted small" style={{ marginBottom: 10 }}>
-                Bloc utilisé : <b>{isServiceRunning ? "bloc en cours" : "premier bloc"}</b>
-              </div>
-
               <div className="placementGrid">
-                {selectedStaff.map((nom) => (
-                  <div key={nom} className="placementRow">
-                    <div className="placementName">{nom}</div>
-                    <select value={blockAssignments[nom] || ""} onChange={(e) => setInitialAssignment(nom, e.target.value)}>
-                      <option value="">-- Choisir poste --</option>
-                      {postes.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
+                {selectedStaff.map((nom) => {
+                  const key = norm(nom);
+                  return (
+                    <div key={nom} className="placementRow">
+                      <div className="placementName">{nom}</div>
+                      <select
+                        value={blockAssignments[key] || ""}
+                        onChange={(e) => setInitialAssignment(nom, e.target.value)}
+                      >
+                        <option value="">-- Choisir poste --</option>
+                        {postes.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
               </div>
 
               {!isServiceRunning && !allHavePoste && (
@@ -305,7 +364,6 @@ export default function Setup() {
                 ⬅️ Retour
               </button>
               <div style={{ flex: 1 }} />
-
               {!isServiceRunning && (
                 <button className="btn primary" disabled={!canStart} onClick={startService}>
                   ▶️ Démarrer service
@@ -319,8 +377,9 @@ export default function Setup() {
       <div className="card">
         <h2>Résumé</h2>
         <div className="muted">
-          Site: <b>{siteCode || "—"}</b> — Date: <b>{dayDate}</b> — Coordinateur: <b>{coordinator || "—"}</b> — Préparateurs:{" "}
-          <b>{dayStaff.length}</b> — Vague pause: <b>{pauseWaveSize || 1}</b>
+          Site: <b>{siteCode || "—"}</b> — Date: <b>{dayDate}</b> — Coordinateur:{" "}
+          <b>{coordinator || "—"}</b> — Préparateurs: <b>{dayStaff.length}</b> — Vague pause:{" "}
+          <b>{pauseWaveSize || 1}</b>
         </div>
       </div>
     </div>

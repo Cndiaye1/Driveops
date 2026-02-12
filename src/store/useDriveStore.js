@@ -3,10 +3,6 @@ import { create } from "zustand";
 import { supabase } from "../services/supabaseClient";
 
 // -----------------------------------------------------
-// ENV
-const SITE_CODE = (import.meta.env.VITE_SITE_CODE || "MELUN").trim().toUpperCase();
-
-// -----------------------------------------------------
 // Utils temps / blocs
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -108,8 +104,12 @@ function sessionKey(siteCode, dayDate) {
   return `${siteCode}__${dayDate}`;
 }
 
+function safeObj(x) {
+  return x && typeof x === "object" ? x : {};
+}
+
 function serializeState(s) {
-  // ✅ on enregistre UNIQUEMENT les données métier (pas les fonctions / flags internes)
+  // ✅ on enregistre UNIQUEMENT les données métier (pas les fonctions)
   return {
     // meta
     siteCode: s.siteCode,
@@ -159,14 +159,13 @@ function serializeState(s) {
 function mergeRemoteIntoState(defaults, remoteJson) {
   if (!remoteJson || typeof remoteJson !== "object") return defaults;
 
-  // ✅ petit garde-fou: si remote a des vieux IDs bloc legacy -> normalise
-  const horaires = remoteJson.horaires || defaults.horaires;
+  const horarios = remoteJson.horaires || defaults.horaires;
 
   const migrateMapByBlock = (obj) => {
     const src = obj || {};
     const out = {};
     for (const oldKey of Object.keys(src)) {
-      const newKey = normalizeBlockId(oldKey, horaires);
+      const newKey = normalizeBlockId(oldKey, horarios);
       out[newKey] = src[oldKey];
     }
     return out;
@@ -177,14 +176,13 @@ function mergeRemoteIntoState(defaults, remoteJson) {
     ...remoteJson,
   };
 
-  merged.horaires = horaires;
-  merged.currentBlockId = normalizeBlockId(merged.currentBlockId || "0", horaires);
+  merged.horaires = horarios;
+  merged.currentBlockId = normalizeBlockId(merged.currentBlockId || "0", horarios);
 
   merged.assignments = migrateMapByBlock(merged.assignments);
   merged.skipRotation = migrateMapByBlock(merged.skipRotation);
   merged.pausePrevPoste = migrateMapByBlock(merged.pausePrevPoste);
 
-  // ✅ clamps
   const staffLen = merged.dayStaff?.length || 1;
   merged.pauseWaveSize = Math.max(1, Math.min(staffLen, Number(merged.pauseWaveSize) || 1));
 
@@ -192,10 +190,12 @@ function mergeRemoteIntoState(defaults, remoteJson) {
 }
 
 // -----------------------------------------------------
-// Defaults (ton app)
+// Defaults
+const DEFAULT_SITE_CODE = (import.meta.env.VITE_SITE_CODE || "MELUN").trim().toUpperCase();
+
 const defaultState = {
   // meta
-  siteCode: SITE_CODE,
+  siteCode: DEFAULT_SITE_CODE,
 
   // UI
   screen: "setup",
@@ -205,14 +205,12 @@ const defaultState = {
   wallMode: false,
   printMode: false,
 
-  // Référentiels (tu peux les modifier dans Setup)
+  // Référentiels
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
 
-  // Postes (tes postes)
   postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
 
-  // Horaires
   horaires: [
     "06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00",
     "16:00","17:00","18:00","19:00","20:00","21:00",
@@ -246,6 +244,8 @@ const defaultState = {
   returnAlertUntil: {},
 
   // Flags sync
+  apiStatus: "idle", // idle|syncing|pulled|pushed|error
+  apiError: "",
   _sessionLoadedKey: null,
   _subscribedKey: null,
   _saving: false,
@@ -273,7 +273,7 @@ export const useDriveStore = create((set, get) => {
   const normalizeName = (n) => String(n || "").trim().toUpperCase();
   const normalizePoste = (p) => String(p || "").trim().toUpperCase();
 
-  // ---------------- Remote: load + save + realtime
+  // ---------------- Remote: load + upsert
   const loadSession = async (siteCode, dayDate) => {
     const { data, error } = await supabase
       .from(TABLE)
@@ -304,59 +304,84 @@ export const useDriveStore = create((set, get) => {
     return data;
   };
 
+  // ---------------- Autosave (debounce)
   let saveTimer = null;
-  const scheduleSave = () => {
-    const s = get();
-    if (!s._sessionLoadedKey) return; // pas encore chargé => on évite d’écraser
 
+  const doSaveNow = async () => {
+    const st = get();
+    try {
+      set({ _saving: true, _error: null, apiStatus: "syncing", apiError: "" });
+
+      const body = serializeState(st);
+      await upsertSession(st.siteCode, st.dayDate, body);
+
+      set({
+        _saving: false,
+        _lastLocalWriteAt: Date.now(),
+        apiStatus: "pushed",
+        apiError: "",
+      });
+    } catch (e) {
+      set({
+        _saving: false,
+        apiStatus: "error",
+        apiError: String(e?.message || e),
+        _error: String(e?.message || e),
+      });
+    }
+  };
+
+  // ✅ autosave robuste : si session pas chargée, on hydrate d’abord puis save
+  const scheduleSave = () => {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
       const st = get();
-      try {
-        set({ _saving: true, _error: null });
-        const body = serializeState(st);
-        await upsertSession(st.siteCode, st.dayDate, body);
-        set({ _saving: false, _lastLocalWriteAt: Date.now() });
-      } catch (e) {
-        set({ _saving: false, _error: String(e?.message || e) });
+      const key = sessionKey(st.siteCode, st.dayDate);
+
+      // si pas encore “load” : on hydrate pour éviter d’écraser du remote
+      if (st._sessionLoadedKey !== key) {
+        await hydrateFromRemote(st.siteCode, st.dayDate);
       }
-    }, 350); // debounce
+
+      await doSaveNow();
+    }, 350);
   };
+
+  // ---------------- Realtime
+  let currentChannel = null;
 
   const ensureRealtimeSubscribed = async (siteCode, dayDate) => {
     const key = sessionKey(siteCode, dayDate);
     const st = get();
     if (st._subscribedKey === key) return;
 
-    // unsubscribe précédent
-    if (st._subscribedKey) {
-      try {
-        supabase.removeAllChannels();
-      } catch {}
-    }
+    try {
+      if (currentChannel) {
+        await supabase.removeChannel(currentChannel);
+      }
+    } catch {}
+    currentChannel = null;
 
-    const channel = supabase
+    currentChannel = supabase
       .channel(`drive_sessions_${key}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: TABLE, filter: `site_code=eq.${siteCode}` },
         async (payload) => {
-          // On ne hydrate que si c'est le bon day_date
           const row = payload?.new || payload?.old;
           if (!row) return;
           if (String(row.day_date) !== String(dayDate)) return;
 
-          // ✅ Remote écrase local (mais seulement si ce n’est pas nous qui venons d’écrire)
+          // ignore echo si on vient d’écrire
           const now = Date.now();
           const st2 = get();
-          const remoteUpdatedAt = row.updated_at ? new Date(row.updated_at).getTime() : 0;
-
-          // si on vient d’écrire localement (dernières 700ms), on ignore l’écho réseau
           if (now - (st2._lastLocalWriteAt || 0) < 700) return;
 
           const next = mergeRemoteIntoState(st2, row.state_json);
           set({
             ...next,
+            apiStatus: "pulled",
+            apiError: "",
             _lastRemoteUpdatedAt: row.updated_at || null,
             _error: null,
           });
@@ -365,50 +390,122 @@ export const useDriveStore = create((set, get) => {
       .subscribe();
 
     set({ _subscribedKey: key });
-    return channel;
   };
 
+  // ---------------- Hydrate (REMOTE -> LOCAL)
   const hydrateFromRemote = async (siteCode, dayDate) => {
     const key = sessionKey(siteCode, dayDate);
     const st = get();
     if (st._sessionLoadedKey === key) return;
 
-    set({ _error: null });
+    set({ _error: null, apiStatus: "syncing", apiError: "" });
 
     try {
       const row = await loadSession(siteCode, dayDate);
 
       if (!row) {
-        // ✅ si rien en remote, on crée une session vide (sans casser tes defaults)
+        // pas de remote : on init defaults + on push (sans casser tes defaults)
         const base = { ...defaultState, siteCode, dayDate };
         base.currentBlockId = getFirstBlockId(base.horaires, base.rotationMinutes);
+
         set({
           ...base,
           _sessionLoadedKey: key,
           _lastRemoteUpdatedAt: null,
+          apiStatus: "pulled",
         });
+
         await upsertSession(siteCode, dayDate, serializeState(get()));
+        set({ apiStatus: "pushed" });
       } else {
-        const merged = mergeRemoteIntoState(
-          { ...defaultState, siteCode, dayDate },
-          row.state_json
-        );
-        // ✅ remote écrase local
+        const merged = mergeRemoteIntoState({ ...defaultState, siteCode, dayDate }, row.state_json);
         set({
           ...merged,
           _sessionLoadedKey: key,
           _lastRemoteUpdatedAt: row.updated_at || null,
+          apiStatus: "pulled",
+          apiError: "",
         });
       }
 
       await ensureRealtimeSubscribed(siteCode, dayDate);
     } catch (e) {
-      set({ _error: String(e?.message || e) });
+      set({ apiStatus: "error", apiError: String(e?.message || e), _error: String(e?.message || e) });
     }
   };
 
+  // ---------------- Sync MANUEL (remote écrase local + fallback push si vide/absent)
+  const hydrateFromApi = async () => {
+    const st = get();
+    const siteCode = String(st.siteCode || "").trim().toUpperCase();
+    const dayDate = String(st.dayDate || "").slice(0, 10);
+
+    if (!siteCode || !dayDate) {
+      set({ apiStatus: "error", apiError: "Site/date manquants" });
+      return;
+    }
+
+    set({ apiStatus: "syncing", apiError: "" });
+
+    try {
+      const row = await loadSession(siteCode, dayDate);
+
+      // absent -> push local
+      if (!row) {
+        await doSaveNow();
+        set({ _sessionLoadedKey: sessionKey(siteCode, dayDate), apiStatus: "pushed" });
+        await ensureRealtimeSubscribed(siteCode, dayDate);
+        return;
+      }
+
+      const remoteJson = row.state_json;
+      const emptyRemote =
+        !remoteJson || typeof remoteJson !== "object" || Object.keys(remoteJson).length === 0;
+
+      // remote vide -> push local (évite wipe)
+      if (emptyRemote) {
+        await doSaveNow();
+        set({ _sessionLoadedKey: sessionKey(siteCode, dayDate), apiStatus: "pushed" });
+        await ensureRealtimeSubscribed(siteCode, dayDate);
+        return;
+      }
+
+      // sinon : remote écrase local
+      const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, remoteJson);
+      set({
+        ...merged,
+        _sessionLoadedKey: sessionKey(siteCode, dayDate),
+        _lastRemoteUpdatedAt: row.updated_at || null,
+        apiStatus: "pulled",
+        apiError: "",
+      });
+
+      await ensureRealtimeSubscribed(siteCode, dayDate);
+    } catch (e) {
+      set({ apiStatus: "error", apiError: String(e?.message || e) });
+    }
+  };
+
+  const pushToApi = async () => {
+    const st = get();
+    const siteCode = String(st.siteCode || "").trim().toUpperCase();
+    const dayDate = String(st.dayDate || "").slice(0, 10);
+
+    if (!siteCode || !dayDate) {
+      set({ apiStatus: "error", apiError: "Site/date manquants" });
+      return;
+    }
+
+    const key = sessionKey(siteCode, dayDate);
+    if (st._sessionLoadedKey !== key) {
+      await hydrateFromRemote(siteCode, dayDate);
+    }
+    await doSaveNow();
+    await ensureRealtimeSubscribed(siteCode, dayDate);
+  };
+
   // -----------------------------------------------------
-  // Public API store
+  // Public API
   return {
     ...defaultState,
 
@@ -416,6 +513,25 @@ export const useDriveStore = create((set, get) => {
     ensureSessionLoaded: async () => {
       const s = get();
       await hydrateFromRemote(s.siteCode, s.dayDate);
+    },
+
+    // ✅ boutons (Setup)
+    hydrateFromApi,
+    pushToApi,
+
+    // ---------- site/date (clé = site+date)
+    setSiteCode: async (siteCode) => {
+      const v = String(siteCode || "").trim().toUpperCase();
+      if (!v) return;
+
+      set((s) => ({ ...s, siteCode: v, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+      await hydrateFromRemote(v, get().dayDate);
+    },
+
+    setDayDate: async (dayDate) => {
+      const d = String(dayDate || "").slice(0, 10);
+      set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+      await hydrateFromRemote(get().siteCode, d);
     },
 
     // ---------- navigation
@@ -527,12 +643,6 @@ export const useDriveStore = create((set, get) => {
     },
 
     // ---------- config journée
-    setDayDate: async (dayDate) => {
-      const d = String(dayDate || "").slice(0, 10);
-      set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null })); // force reload
-      await hydrateFromRemote(get().siteCode, d);
-    },
-
     setCoordinator: (coordinator) => {
       set((s) => ({ ...s, coordinator }));
       scheduleSave();
@@ -548,7 +658,6 @@ export const useDriveStore = create((set, get) => {
 
         const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
 
-        // Si on est en setup (service pas lancé), on garde cohérence sur le premier bloc
         const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
         const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
 
@@ -849,7 +958,13 @@ export const useDriveStore = create((set, get) => {
         const currentIndex = blocks.findIndex((b) => b.id === curId);
         const nextObj = currentIndex >= 0 ? blocks[currentIndex + 1] : null;
         if (!nextObj) {
-          return { ...s, currentBlockId: curId, blockStartedAt: Date.now(), rotationImminent: false, rotationLocked: false };
+          return {
+            ...s,
+            currentBlockId: curId,
+            blockStartedAt: Date.now(),
+            rotationImminent: false,
+            rotationLocked: false,
+          };
         }
 
         const nextBlockId = nextObj.id;
