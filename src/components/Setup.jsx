@@ -8,10 +8,9 @@ export default function Setup() {
   const {
     siteCode,
     setSiteCode,
+
     apiStatus,
     apiError,
-    hydrateFromApi,
-    pushToApi,
     ensureSessionLoaded,
 
     setupStep,
@@ -104,16 +103,13 @@ export default function Setup() {
     setNewCoordo("");
   }
 
-  const waveMax = useMemo(
-    () => Math.max(1, Math.min(dayStaff?.length || 1, 6)),
-    [dayStaff]
-  );
-
-  const canSync = norm(siteCode) !== "" && String(dayDate || "").trim() !== "";
+  const waveMax = useMemo(() => Math.max(1, Math.min(dayStaff?.length || 1, 6)), [dayStaff]);
 
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
+      // optionnel: refresh page ou reset UI
+      // window.location.reload();
     } catch (e) {
       console.error(e);
     }
@@ -137,37 +133,15 @@ export default function Setup() {
               <label className="muted small">Site code</label>
               <input
                 value={siteCode || ""}
-                onChange={(e) => setSiteCode(norm(e.target.value))} // ✅ FIX: normalise
+                onChange={(e) => setSiteCode(norm(e.target.value))}
                 placeholder="MELUN"
               />
             </div>
 
             <div>
               <label className="muted small">Date</label>
-              <input
-                type="date"
-                value={dayDate}
-                onChange={(e) => setDayDate(e.target.value)}
-              />
+              <input type="date" value={dayDate} onChange={(e) => setDayDate(e.target.value)} />
             </div>
-
-            <button
-              className="btn ghost"
-              onClick={hydrateFromApi}
-              disabled={!canSync}
-              title={!canSync ? "Renseigne Site code + Date" : "Sync (remote écrase local, sauf remote vide)"}
-            >
-              🔄 Synchronisation
-            </button>
-
-            <button
-              className="btn ghost"
-              onClick={pushToApi}
-              disabled={!canSync}
-              title={!canSync ? "Renseigne Site code + Date" : "Sauvegarde (local -> remote)"}
-            >
-              💾 Push
-            </button>
 
             <button className="btn ghost" onClick={handleLogout} title="Se déconnecter">
               🚪 Déconnexion
@@ -181,10 +155,7 @@ export default function Setup() {
         </div>
 
         <div className="wizardTabs">
-          <button
-            className={`tab ${setupStep === 1 ? "active" : ""}`}
-            onClick={() => setSetupStep(1)}
-          >
+          <button className={`tab ${setupStep === 1 ? "active" : ""}`} onClick={() => setSetupStep(1)}>
             1) Équipe du jour
           </button>
 
@@ -213,7 +184,9 @@ export default function Setup() {
                 <select value={coordinator} onChange={(e) => setCoordinator(e.target.value)}>
                   <option value="">-- Choisir le coordinateur --</option>
                   {coordosList.slice().sort().map((c) => (
-                    <option key={c} value={c}>{c}</option>
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -224,7 +197,9 @@ export default function Setup() {
                   onChange={(e) => setNewCoordo(e.target.value)}
                   placeholder="Ajouter coordinateur (ex: AMINE)"
                 />
-                <button className="btn" onClick={addCoordo}>+ Ajouter</button>
+                <button className="btn" onClick={addCoordo}>
+                  + Ajouter
+                </button>
               </div>
 
               <div className="listGrid" style={{ marginTop: 10 }}>
@@ -268,7 +243,9 @@ export default function Setup() {
                   onChange={(e) => setNewPrep(e.target.value)}
                   placeholder="Ajouter préparateur (ex: SARAH)"
                 />
-                <button className="btn" onClick={addPrep}>+ Ajouter</button>
+                <button className="btn" onClick={addPrep}>
+                  + Ajouter
+                </button>
               </div>
             </div>
 
@@ -277,17 +254,23 @@ export default function Setup() {
               <p className="muted">Définit le nombre max envoyés en pause en même temps.</p>
 
               <div className="row">
-                <span className="muted" style={{ minWidth: 130 }}>Taille de vague</span>
+                <span className="muted" style={{ minWidth: 130 }}>
+                  Taille de vague
+                </span>
                 <select value={pauseWaveSize || 1} onChange={(e) => setPauseWaveSize(Number(e.target.value))}>
                   {Array.from({ length: waveMax }, (_, i) => i + 1).map((v) => (
-                    <option key={v} value={v}>{v}</option>
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
                   ))}
                 </select>
               </div>
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={resetDay}>🧹 Reset journée</button>
+              <button className="btn ghost" onClick={resetDay}>
+                🧹 Reset journée
+              </button>
               <div style={{ flex: 1 }} />
               <button className="btn primary" disabled={!canGoStep2} onClick={() => setSetupStep(2)}>
                 ➡️ Suivant : Placement initial
@@ -312,13 +295,12 @@ export default function Setup() {
                   return (
                     <div key={nom} className="placementRow">
                       <div className="placementName">{nom}</div>
-                      <select
-                        value={blockAssignments[key] || ""}
-                        onChange={(e) => setInitialAssignment(nom, e.target.value)}
-                      >
+                      <select value={blockAssignments[key] || ""} onChange={(e) => setInitialAssignment(nom, e.target.value)}>
                         <option value="">-- Choisir poste --</option>
                         {postes.map((p) => (
-                          <option key={p} value={p}>{p}</option>
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -334,7 +316,9 @@ export default function Setup() {
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={() => setSetupStep(1)}>⬅️ Retour</button>
+              <button className="btn ghost" onClick={() => setSetupStep(1)}>
+                ⬅️ Retour
+              </button>
               <div style={{ flex: 1 }} />
               {!isServiceRunning && (
                 <button className="btn primary" disabled={!canStart} onClick={startService}>
@@ -349,9 +333,8 @@ export default function Setup() {
       <div className="card">
         <h2>Résumé</h2>
         <div className="muted">
-          Site: <b>{siteCode || "—"}</b> — Date: <b>{dayDate}</b> — Coordinateur:{" "}
-          <b>{coordinator || "—"}</b> — Préparateurs: <b>{dayStaff.length}</b> — Vague pause:{" "}
-          <b>{pauseWaveSize || 1}</b>
+          Site: <b>{siteCode || "—"}</b> — Date: <b>{dayDate}</b> — Coordinateur: <b>{coordinator || "—"}</b> — Préparateurs:{" "}
+          <b>{dayStaff.length}</b> — Vague pause: <b>{pauseWaveSize || 1}</b>
         </div>
       </div>
     </div>

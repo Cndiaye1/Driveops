@@ -1,5 +1,6 @@
 // src/store/useDriveStore.js
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { supabase } from "../services/supabaseClient";
 
 // -----------------------------------------------------
@@ -108,26 +109,45 @@ function isEmptyObject(x) {
   return !!x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).length === 0;
 }
 
+// ✅ messages “vendables”
+function prettifyApiError(msgRaw) {
+  const msg = String(msgRaw || "");
+  const lower = msg.toLowerCase();
+
+  if (!msg) return "";
+  if (lower.includes("row-level security") || lower.includes("violates row-level security")) {
+    return "Accès refusé (compte non autorisé sur ce site).";
+  }
+  if (lower.includes("jwt") || lower.includes("unauthorized") || lower.includes("not authenticated")) {
+    return "Connexion requise (merci de te reconnecter).";
+  }
+  if (
+    lower.includes("fetch") ||
+    lower.includes("network") ||
+    lower.includes("offline") ||
+    lower.includes("timeout")
+  ) {
+    return "Connexion instable — en attente…";
+  }
+  return msg;
+}
+
 function serializeState(s) {
-  // ✅ on enregistre UNIQUEMENT les données métier (pas les fonctions)
+  // ✅ on enregistre UNIQUEMENT les données métier
   return {
-    // meta
     siteCode: s.siteCode,
     dayDate: s.dayDate,
 
-    // UI
     screen: s.screen,
     setupStep: s.setupStep,
     wallMode: s.wallMode,
     printMode: s.printMode,
 
-    // référentiels
     preparateursList: s.preparateursList,
     coordosList: s.coordosList,
     postes: s.postes,
     horaires: s.horaires,
 
-    // règles
     rotationMinutes: s.rotationMinutes,
     rotationWarnMinutes: s.rotationWarnMinutes,
     pauseAfterMinutes: s.pauseAfterMinutes,
@@ -135,11 +155,9 @@ function serializeState(s) {
     pauseWaveSize: s.pauseWaveSize,
     syncBlocksToSystemClock: s.syncBlocksToSystemClock,
 
-    // config journée
     coordinator: s.coordinator,
     dayStaff: s.dayStaff,
 
-    // runtime
     dayStartedAt: s.dayStartedAt,
     blockStartedAt: s.blockStartedAt,
     serviceStartedAt: s.serviceStartedAt,
@@ -147,7 +165,6 @@ function serializeState(s) {
     rotationImminent: s.rotationImminent,
     rotationLocked: s.rotationLocked,
 
-    // data runtime
     assignments: s.assignments,
     pauseTakenAt: s.pauseTakenAt,
     skipRotation: s.skipRotation,
@@ -157,9 +174,9 @@ function serializeState(s) {
 }
 
 /**
- * Merge remote -> local (remote gagne), avec garde-fous:
+ * Merge remote -> local (remote gagne), garde-fous:
  * - remote null/undefined => defaults
- * - remote {} => defaults (⚠️ IMPORTANT: évite wipe)
+ * - remote {} => defaults (anti wipe)
  * - migration des blockIds legacy
  */
 function mergeRemoteIntoState(defaults, remoteJson) {
@@ -201,29 +218,38 @@ function mergeRemoteIntoState(defaults, remoteJson) {
 const DEFAULT_SITE_CODE = (import.meta.env.VITE_SITE_CODE || "MELUN").trim().toUpperCase();
 
 const defaultState = {
-  // meta
   siteCode: DEFAULT_SITE_CODE,
 
-  // UI
   screen: "setup",
   setupStep: 1,
 
-  // Modes
   wallMode: false,
   printMode: false,
 
-  // Référentiels
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
 
   postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
 
   horaires: [
-    "06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00",
-    "16:00","17:00","18:00","19:00","20:00","21:00",
+    "06:00",
+    "07:00",
+    "08:00",
+    "09:00",
+    "10:00",
+    "11:00",
+    "12:00",
+    "13:00",
+    "14:00",
+    "15:00",
+    "16:00",
+    "17:00",
+    "18:00",
+    "19:00",
+    "20:00",
+    "21:00",
   ],
 
-  // Règles
   rotationMinutes: 120,
   rotationWarnMinutes: 10,
   pauseAfterMinutes: 180,
@@ -231,12 +257,10 @@ const defaultState = {
   pauseWaveSize: 1,
   syncBlocksToSystemClock: true,
 
-  // Config journée
   dayDate: todayISO(),
   coordinator: "",
   dayStaff: [],
 
-  // Runtime
   dayStartedAt: null,
   blockStartedAt: null,
   serviceStartedAt: null,
@@ -250,7 +274,6 @@ const defaultState = {
   pausePrevPoste: {},
   returnAlertUntil: {},
 
-  // Flags sync
   apiStatus: "idle", // idle|syncing|pulled|pushed|offline|error
   apiError: "",
 
@@ -262,908 +285,923 @@ const defaultState = {
   _lastLocalWriteAt: 0,
   _error: null,
 
-  // Offline save queue
   _pendingSave: false,
   _retryCount: 0,
 };
 
 // -----------------------------------------------------
-// Store
-export const useDriveStore = create((set, get) => {
-  // helpers maps
-  const ensureBlockMaps = (s, bid) => {
-    const assignments = { ...(s.assignments || {}) };
-    const skipRotation = { ...(s.skipRotation || {}) };
-    const pausePrevPoste = { ...(s.pausePrevPoste || {}) };
-
-    if (!assignments[bid]) assignments[bid] = {};
-    if (!skipRotation[bid]) skipRotation[bid] = {};
-    if (!pausePrevPoste[bid]) pausePrevPoste[bid] = {};
-
-    return { assignments, skipRotation, pausePrevPoste };
-  };
-
-  const normalizeName = (n) => String(n || "").trim().toUpperCase();
-  const normalizePoste = (p) => String(p || "").trim().toUpperCase();
-
-  // Remote: load + upsert
-  const loadSession = async (siteCode, dayDate) => {
-    const { data, error } = await supabase
-      .from(TABLE)
-      .select("id, site_code, day_date, state_json, updated_at")
-      .eq("site_code", siteCode)
-      .eq("day_date", dayDate)
-      .maybeSingle();
-
-    if (error) throw error;
-    return data || null;
-  };
-
-  const upsertSession = async (siteCode, dayDate, stateJson) => {
-    const payload = {
-      site_code: siteCode,
-      day_date: dayDate,
-      state_json: stateJson,
-      updated_at: new Date().toISOString(),
-    };
-
-    const { data, error } = await supabase
-      .from(TABLE)
-      .upsert(payload, { onConflict: "site_code,day_date" })
-      .select("id, updated_at")
-      .single();
-
-    if (error) throw error;
-    return data;
-  };
-
-  // ---------------- Autosave pro (debounce + offline queue)
-  let saveTimer = null;
-  let retryTimer = null;
-
-  const scheduleRetry = () => {
-    const st = get();
-    if (!st._pendingSave) return;
-
-    // backoff simple: 1s, 2s, 4s, 8s... max 20s
-    const ms = Math.min(20000, 1000 * Math.pow(2, Math.min(4, st._retryCount || 0)));
-
-    if (retryTimer) clearTimeout(retryTimer);
-    retryTimer = setTimeout(async () => {
-      await doSaveNow();
-    }, ms);
-  };
-
-  const doSaveNow = async () => {
-    const st = get();
-    const key = sessionKey(st.siteCode, st.dayDate);
-
-    // ✅ Ne jamais écrire tant qu’on n’a pas hydrater la session site+date
-    if (st._sessionLoadedKey !== key) {
-      set({ apiStatus: "syncing", apiError: "" });
-      await hydrateFromRemote(st.siteCode, st.dayDate);
-    }
-
-    try {
-      // offline ?
-      if (typeof navigator !== "undefined" && navigator.onLine === false) {
-        set({ apiStatus: "offline", _pendingSave: true, apiError: "Hors connexion — en attente…" });
-        scheduleRetry();
-        return;
-      }
-
-      set({ _saving: true, _error: null, apiStatus: "syncing", apiError: "" });
-
-      const body = serializeState(get());
-      await upsertSession(st.siteCode, st.dayDate, body);
-
-      set({
-        _saving: false,
-        _pendingSave: false,
-        _retryCount: 0,
-        _lastLocalWriteAt: Date.now(),
-        apiStatus: "pushed",
-        apiError: "",
-      });
-    } catch (e) {
-      const msg = String(e?.message || e);
-
-      // réseau / offline → on queue
-      const isNetwork =
-        msg.toLowerCase().includes("fetch") ||
-        msg.toLowerCase().includes("network") ||
-        msg.toLowerCase().includes("offline") ||
-        msg.toLowerCase().includes("timeout");
-
-      if (isNetwork) {
-        set((s) => ({
-          _saving: false,
-          apiStatus: "offline",
-          apiError: "Connexion instable — en attente…",
-          _pendingSave: true,
-          _retryCount: (s._retryCount || 0) + 1,
-        }));
-        scheduleRetry();
-        return;
-      }
-
-      set({
-        _saving: false,
-        apiStatus: "error",
-        apiError: msg,
-        _error: msg,
-        _pendingSave: false,
-      });
-    }
-  };
-
-  const scheduleSave = () => {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(async () => {
-      await doSaveNow();
-    }, 350);
-  };
-
-  // Auto retry on "online" event
-  if (typeof window !== "undefined") {
-    window.addEventListener("online", () => {
-      const st = get();
-      if (st._pendingSave) doSaveNow();
-    });
-  }
-
-  // ---------------- Realtime
-  let currentChannel = null;
-
-  const ensureRealtimeSubscribed = async (siteCode, dayDate) => {
-    const key = sessionKey(siteCode, dayDate);
-    const st = get();
-    if (st._subscribedKey === key) return;
-
-    try {
-      if (currentChannel) await supabase.removeChannel(currentChannel);
-    } catch {}
-    currentChannel = null;
-
-    currentChannel = supabase
-      .channel(`drive_sessions_${key}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: TABLE, filter: `site_code=eq.${siteCode}` },
-        async (payload) => {
-          const row = payload?.new || payload?.old;
-          if (!row) return;
-          if (String(row.day_date) !== String(dayDate)) return;
-
-          // ignore echo si on vient d’écrire
-          const now = Date.now();
-          const st2 = get();
-          if (now - (st2._lastLocalWriteAt || 0) < 700) return;
-
-          // ignore remote vide
-          if (isEmptyObject(row.state_json)) return;
-
-          const next = mergeRemoteIntoState(st2, row.state_json);
-          set({
-            ...next,
-            apiStatus: "pulled",
-            apiError: "",
-            _lastRemoteUpdatedAt: row.updated_at || null,
-            _error: null,
-          });
-        }
-      )
-      .subscribe();
-
-    set({ _subscribedKey: key });
-  };
-
-  // ---------------- Hydrate (REMOTE -> LOCAL)
-  const hydrateFromRemote = async (siteCode, dayDate) => {
-    const key = sessionKey(siteCode, dayDate);
-    const st = get();
-    if (st._sessionLoadedKey === key) return;
-
-    set({ _error: null, apiStatus: "syncing", apiError: "" });
-
-    try {
-      const row = await loadSession(siteCode, dayDate);
-
-      if (!row || isEmptyObject(row.state_json)) {
-        // ✅ pas de remote OU remote vide => init defaults local + push (sans wipe)
-        const base = { ...defaultState, siteCode, dayDate };
-        base.currentBlockId = getFirstBlockId(base.horaires, base.rotationMinutes);
-
-        set({
-          ...base,
-          _sessionLoadedKey: key,
-          _lastRemoteUpdatedAt: row?.updated_at || null,
-          apiStatus: "pulled",
-        });
-
-        // push une base propre (si auth ok / online)
-        await doSaveNow();
-      } else {
-        const merged = mergeRemoteIntoState({ ...defaultState, siteCode, dayDate }, row.state_json);
-
-        // si currentBlockId est encore "0" => initialise au premier bloc
-        if (!merged.currentBlockId || merged.currentBlockId === "0") {
-          merged.currentBlockId = getFirstBlockId(merged.horaires, merged.rotationMinutes);
-        }
-
-        set({
-          ...merged,
-          _sessionLoadedKey: key,
-          _lastRemoteUpdatedAt: row.updated_at || null,
-          apiStatus: "pulled",
-          apiError: "",
-        });
-      }
-
-      await ensureRealtimeSubscribed(siteCode, dayDate);
-    } catch (e) {
-      set({ apiStatus: "error", apiError: String(e?.message || e), _error: String(e?.message || e) });
-    }
-  };
-
-  // ---------------- Sync MANUEL (remote -> local, sinon push)
-  const hydrateFromApi = async () => {
-    const st = get();
-    const siteCode = String(st.siteCode || "").trim().toUpperCase();
-    const dayDate = String(st.dayDate || "").slice(0, 10);
-
-    if (!siteCode || !dayDate) {
-      set({ apiStatus: "error", apiError: "Site/date manquants" });
-      return;
-    }
-
-    set({ apiStatus: "syncing", apiError: "" });
-
-    try {
-      const row = await loadSession(siteCode, dayDate);
-
-      // absent ou vide -> push local
-      if (!row || isEmptyObject(row.state_json)) {
-        await doSaveNow();
-        set({ _sessionLoadedKey: sessionKey(siteCode, dayDate), apiStatus: "pushed" });
-        await ensureRealtimeSubscribed(siteCode, dayDate);
-        return;
-      }
-
-      // remote écrase local
-      const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
-      set({
-        ...merged,
-        _sessionLoadedKey: sessionKey(siteCode, dayDate),
-        _lastRemoteUpdatedAt: row.updated_at || null,
-        apiStatus: "pulled",
-        apiError: "",
-      });
-
-      await ensureRealtimeSubscribed(siteCode, dayDate);
-    } catch (e) {
-      set({ apiStatus: "error", apiError: String(e?.message || e) });
-    }
-  };
-
-  const pushToApi = async () => {
-    await doSaveNow();
-  };
-
-  // -----------------------------------------------------
-  // Public API
-  return {
-    ...defaultState,
-
-    // ✅ à appeler au démarrage (Setup/Cockpit)
-    ensureSessionLoaded: async () => {
-      const s = get();
-      await hydrateFromRemote(s.siteCode, s.dayDate);
-    },
-
-    // ✅ boutons (Setup)
-    hydrateFromApi,
-    pushToApi,
-
-    // ---------- site/date (clé = site+date)
-    setSiteCode: async (siteCode) => {
-      const v = String(siteCode || "").trim().toUpperCase();
-      if (!v) return;
-
-      set((s) => ({ ...s, siteCode: v, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
-      await hydrateFromRemote(v, get().dayDate);
-    },
-
-    setDayDate: async (dayDate) => {
-      const d = String(dayDate || "").slice(0, 10);
-      set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
-      await hydrateFromRemote(get().siteCode, d);
-    },
-
-    // ---------- navigation
-    goSetup: () => set((s) => ({ ...s, screen: "setup" })),
-    goCockpit: () => set((s) => ({ ...s, screen: "cockpit" })),
-
-    setSetupStep: (setupStep) => set((s) => ({ ...s, setupStep })),
-
-    // ---------- modes UI
-    setWallMode: (wallMode) => set((s) => ({ ...s, wallMode: !!wallMode })),
-    enterPrintMode: () => set((s) => ({ ...s, printMode: true })),
-    exitPrintMode: () => set((s) => ({ ...s, printMode: false })),
-
-    // ---------- sync blocks
-    setSyncBlocksToSystemClock: (value) => {
-      set((s) => ({ ...s, syncBlocksToSystemClock: !!value }));
-      scheduleSave();
-    },
-
-    // ---------- pauses config
-    setPauseWaveSize: (pauseWaveSize) => {
-      set((s) => {
-        const max = Math.max(1, s.dayStaff?.length || 1);
-        const v = Math.max(1, Math.min(max, Number(pauseWaveSize) || 1));
-        return { ...s, pauseWaveSize: v };
-      });
-      scheduleSave();
-    },
-
-    // ---------- référentiels
-    addPreparateurToList: (name) => {
-      const n = normalizeName(name);
-      if (!n) return;
-      set((s) => {
-        if (s.preparateursList.includes(n)) return s;
-        return { ...s, preparateursList: [...s.preparateursList, n].sort() };
-      });
-      scheduleSave();
-    },
-
-    removePreparateurFromList: (name) => {
-      const upper = normalizeName(name);
-      set((s) => {
-        const preparateursList = (s.preparateursList || []).filter((x) => x !== upper);
-        const dayStaff = (s.dayStaff || []).filter((x) => x !== upper);
-
+// Store (persist local + sync supabase)
+export const useDriveStore = create(
+  persist(
+    (set, get) => {
+      // helpers maps
+      const ensureBlockMaps = (s, bid) => {
         const assignments = { ...(s.assignments || {}) };
-        for (const bid of Object.keys(assignments)) {
-          const copy = { ...(assignments[bid] || {}) };
-          delete copy[upper];
-          assignments[bid] = copy;
-        }
-
         const skipRotation = { ...(s.skipRotation || {}) };
-        for (const bid of Object.keys(skipRotation)) {
-          const copy = { ...(skipRotation[bid] || {}) };
-          delete copy[upper];
-          skipRotation[bid] = copy;
-        }
-
         const pausePrevPoste = { ...(s.pausePrevPoste || {}) };
-        for (const bid of Object.keys(pausePrevPoste)) {
-          const copy = { ...(pausePrevPoste[bid] || {}) };
-          delete copy[upper];
-          pausePrevPoste[bid] = copy;
-        }
-
-        const pauseTakenAt = { ...(s.pauseTakenAt || {}) };
-        delete pauseTakenAt[upper];
-
-        const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
-        delete returnAlertUntil[upper];
-
-        const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
-
-        return {
-          ...s,
-          preparateursList,
-          dayStaff,
-          assignments,
-          skipRotation,
-          pausePrevPoste,
-          pauseTakenAt,
-          returnAlertUntil,
-          pauseWaveSize,
-        };
-      });
-      scheduleSave();
-    },
-
-    addCoordoToList: (name) => {
-      const n = normalizeName(name);
-      if (!n) return;
-      set((s) => {
-        if (s.coordosList.includes(n)) return s;
-        return { ...s, coordosList: [...s.coordosList, n].sort() };
-      });
-      scheduleSave();
-    },
-
-    removeCoordoFromList: (name) => {
-      const upper = normalizeName(name);
-      set((s) => {
-        const coordosList = (s.coordosList || []).filter((x) => x !== upper);
-        const coordinator = normalizeName(s.coordinator) === upper ? "" : s.coordinator;
-        return { ...s, coordosList, coordinator };
-      });
-      scheduleSave();
-    },
-
-    // ---------- config journée
-    setCoordinator: (coordinator) => {
-      const c = normalizeName(coordinator);
-      set((s) => ({ ...s, coordinator: c }));
-      scheduleSave();
-    },
-
-    toggleDayStaff: (name) => {
-      const upper = normalizeName(name);
-      if (!upper) return;
-
-      set((s) => {
-        const exists = s.dayStaff.includes(upper);
-        const dayStaff = exists ? s.dayStaff.filter((x) => x !== upper) : [...s.dayStaff, upper].sort();
-
-        const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
-
-        const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
-        const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
-
-        const assignments = { ...s.assignments };
-        const bid = serviceOn ? normalizeBlockId(s.currentBlockId || setupBlockId, s.horaires) : setupBlockId;
 
         if (!assignments[bid]) assignments[bid] = {};
-        const copy = { ...assignments[bid] };
+        if (!skipRotation[bid]) skipRotation[bid] = {};
+        if (!pausePrevPoste[bid]) pausePrevPoste[bid] = {};
 
-        if (exists) delete copy[upper];
-        else copy[upper] = copy[upper] ?? "";
+        return { assignments, skipRotation, pausePrevPoste };
+      };
 
-        assignments[bid] = copy;
+      const normalizeName = (n) => String(n || "").trim().toUpperCase();
+      const normalizePoste = (p) => String(p || "").trim().toUpperCase();
 
-        return { ...s, dayStaff, pauseWaveSize, assignments, currentBlockId: bid };
-      });
+      // Remote: load + upsert
+      const loadSession = async (siteCode, dayDate) => {
+        const { data, error } = await supabase
+          .from(TABLE)
+          .select("id, site_code, day_date, state_json, updated_at")
+          .eq("site_code", siteCode)
+          .eq("day_date", dayDate)
+          .maybeSingle();
 
-      scheduleSave();
-    },
+        if (error) throw error;
+        return data || null;
+      };
 
-    // ---------- placement initial (setup)
-    setInitialAssignment: (nom, poste) => {
-      const s = get();
-      const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
-
-      const blockId = serviceOn
-        ? normalizeBlockId(s.currentBlockId || "0", s.horaires)
-        : getFirstBlockId(s.horaires, s.rotationMinutes);
-
-      const upperNom = normalizeName(nom);
-      const p = normalizePoste(poste);
-      if (!upperNom) return;
-
-      set((prev) => {
-        const assignments = { ...prev.assignments };
-        if (!assignments[blockId]) assignments[blockId] = {};
-        assignments[blockId] = { ...assignments[blockId], [upperNom]: p };
-        return { ...prev, assignments, currentBlockId: blockId };
-      });
-
-      scheduleSave();
-    },
-
-    // ---------- smart fill
-    fillMissingAssignmentsFromPrevBlock: () => {
-      set((s) => {
-        const bid = normalizeBlockId(s.currentBlockId, s.horaires);
-        const prevId = getPrevBlockId(s.horaires, s.rotationMinutes, bid);
-        if (!prevId) return s;
-
-        const { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
-        const prevMap = (s.assignments || {})[prevId] || {};
-        const curMap = assignments[bid] || {};
-
-        const nextMap = { ...curMap };
-        for (const rawName of s.dayStaff || []) {
-          const name = normalizeName(rawName);
-          const curPoste = normalizePoste(nextMap[name]);
-          if (curPoste) continue;
-
-          const prevPoste = normalizePoste(prevMap[name]);
-          if (prevPoste) nextMap[name] = prevPoste;
-        }
-
-        assignments[bid] = nextMap;
-        return { ...s, assignments, skipRotation, pausePrevPoste, currentBlockId: bid };
-      });
-
-      scheduleSave();
-    },
-
-    // ---------- FORCER bloc (désactive sync)
-    setCurrentBlockManual: (blockId) => {
-      set((s) => {
-        const bid = String(blockId ?? "");
-        const curId = normalizeBlockId(s.currentBlockId, s.horaires);
-        const syncBlocksToSystemClock = false;
-
-        let { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
-        const curMaps = ensureBlockMaps(s, curId);
-
-        if (!s.assignments?.[bid]) {
-          const prev = curMaps.assignments?.[curId] || {};
-          const carried = {};
-          (s.dayStaff || []).forEach((n) => (carried[normalizeName(n)] = prev[normalizeName(n)] ?? ""));
-          assignments[bid] = carried;
-        }
-
-        if (!s.skipRotation?.[bid]) {
-          const prevSkip = curMaps.skipRotation?.[curId] || {};
-          const carriedSkip = {};
-          (s.dayStaff || []).forEach((n) => (carriedSkip[normalizeName(n)] = !!prevSkip[normalizeName(n)]));
-          skipRotation[bid] = carriedSkip;
-        }
-
-        if (!s.pausePrevPoste?.[bid]) {
-          const prevPrev = curMaps.pausePrevPoste?.[curId] || {};
-          const carriedPrev = {};
-          (s.dayStaff || []).forEach((n) => (carriedPrev[normalizeName(n)] = prevPrev[normalizeName(n)] ?? ""));
-          pausePrevPoste[bid] = carriedPrev;
-        }
-
-        const startMin = Number(bid);
-        const blockStartedAt = Number.isFinite(startMin)
-          ? blockStartTimestamp(s.dayDate, startMin, true)
-          : Date.now();
-
-        return {
-          ...s,
-          syncBlocksToSystemClock,
-          currentBlockId: bid,
-          blockStartedAt,
-          rotationImminent: false,
-          rotationLocked: false,
-          assignments,
-          skipRotation,
-          pausePrevPoste,
+      const upsertSession = async (siteCode, dayDate, stateJson) => {
+        const payload = {
+          site_code: siteCode,
+          day_date: dayDate,
+          state_json: stateJson,
+          updated_at: new Date().toISOString(),
         };
-      });
 
-      scheduleSave();
-    },
+        const { data, error } = await supabase
+          .from(TABLE)
+          .upsert(payload, { onConflict: "site_code,day_date" })
+          .select("id, updated_at")
+          .single();
 
-    // ---------- runtime
-    startService: () => {
-      set((s) => {
-        if (!s.coordinator || s.dayStaff.length === 0) return s;
+        if (error) throw error;
+        return data;
+      };
 
-        const blocks = buildBlocks(s.horaires, s.rotationMinutes);
-        const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
+      // ---------------- Autosave (debounce + offline queue)
+      let saveTimer = null;
+      let retryTimer = null;
 
-        const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
+      const scheduleRetry = () => {
+        const st = get();
+        if (!st._pendingSave) return;
 
-        const now = new Date();
-        const sysStartMin = shouldSyncToday ? getBlockStartMinForNow(s.horaires, s.rotationMinutes, now) : null;
-        const first = sysStartMin != null ? String(sysStartMin) : firstDefault;
+        const ms = Math.min(20000, 1000 * Math.pow(2, Math.min(4, st._retryCount || 0)));
 
-        const assignments = { ...s.assignments };
-        if (!assignments[first] && assignments[firstDefault] && first !== firstDefault) {
-          assignments[first] = { ...assignments[firstDefault] };
+        if (retryTimer) clearTimeout(retryTimer);
+        retryTimer = setTimeout(async () => {
+          await doSaveNow();
+        }, ms);
+      };
+
+      const doSaveNow = async () => {
+        const st = get();
+        const key = sessionKey(st.siteCode, st.dayDate);
+
+        // ✅ Ne jamais écrire tant qu’on n’a pas hydrater la session site+date
+        if (st._sessionLoadedKey !== key) {
+          set({ apiStatus: "syncing", apiError: "" });
+          await hydrateFromRemote(st.siteCode, st.dayDate);
         }
 
-        const blockAssignments = assignments?.[first] || {};
-        const allHavePoste = s.dayStaff.every((n) => {
-          const nn = normalizeName(n);
-          return blockAssignments[nn] && blockAssignments[nn] !== "";
+        try {
+          if (typeof navigator !== "undefined" && navigator.onLine === false) {
+            set({ apiStatus: "offline", _pendingSave: true, apiError: prettifyApiError("offline") });
+            scheduleRetry();
+            return;
+          }
+
+          set({ _saving: true, _error: null, apiStatus: "syncing", apiError: "" });
+
+          const body = serializeState(get());
+          await upsertSession(st.siteCode, st.dayDate, body);
+
+          set({
+            _saving: false,
+            _pendingSave: false,
+            _retryCount: 0,
+            _lastLocalWriteAt: Date.now(),
+            apiStatus: "pushed",
+            apiError: "",
+          });
+        } catch (e) {
+          const msg = String(e?.message || e);
+
+          const isNetwork =
+            msg.toLowerCase().includes("fetch") ||
+            msg.toLowerCase().includes("network") ||
+            msg.toLowerCase().includes("offline") ||
+            msg.toLowerCase().includes("timeout");
+
+          if (isNetwork) {
+            set((s) => ({
+              _saving: false,
+              apiStatus: "offline",
+              apiError: prettifyApiError(msg),
+              _pendingSave: true,
+              _retryCount: (s._retryCount || 0) + 1,
+            }));
+            scheduleRetry();
+            return;
+          }
+
+          set({
+            _saving: false,
+            apiStatus: "error",
+            apiError: prettifyApiError(msg),
+            _error: msg,
+            _pendingSave: false,
+          });
+        }
+      };
+
+      const scheduleSave = () => {
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(async () => {
+          await doSaveNow();
+        }, 350);
+      };
+
+      // Auto retry on "online" event
+      if (typeof window !== "undefined") {
+        window.addEventListener("online", () => {
+          const st = get();
+          if (st._pendingSave) doSaveNow();
         });
-        if (!allHavePoste) return s;
+      }
 
-        const pauseTakenAt = { ...(s.pauseTakenAt || {}) };
-        s.dayStaff.forEach((n) => (pauseTakenAt[normalizeName(n)] = pauseTakenAt[normalizeName(n)] ?? null));
+      // ---------------- Realtime
+      let currentChannel = null;
 
-        const nowMs = Date.now();
-        const blockStartedAt = sysStartMin != null ? blockStartTimestamp(s.dayDate, sysStartMin, true) : nowMs;
+      const ensureRealtimeSubscribed = async (siteCode, dayDate) => {
+        const key = sessionKey(siteCode, dayDate);
+        const st = get();
+        if (st._subscribedKey === key) return;
 
-        const skipRotation = { ...(s.skipRotation || {}) };
-        if (!skipRotation[first]) skipRotation[first] = {};
+        try {
+          if (currentChannel) await supabase.removeChannel(currentChannel);
+        } catch {}
+        currentChannel = null;
 
-        const pausePrevPoste = { ...(s.pausePrevPoste || {}) };
-        if (!pausePrevPoste[first]) pausePrevPoste[first] = {};
+        currentChannel = supabase
+          .channel(`drive_sessions_${key}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: TABLE,
+              filter: `site_code=eq.${siteCode},day_date=eq.${dayDate}`,
+            },
+            async (payload) => {
+              const row = payload?.new || payload?.old;
+              if (!row) return;
 
-        return {
-          ...s,
-          screen: "cockpit",
-          setupStep: 1,
-          dayStartedAt: nowMs,
-          blockStartedAt,
-          serviceStartedAt: nowMs,
-          currentBlockId: first,
-          rotationImminent: false,
-          rotationLocked: false,
-          pauseTakenAt,
-          assignments,
-          skipRotation,
-          pausePrevPoste,
-        };
-      });
+              const now = Date.now();
+              const st2 = get();
+              if (now - (st2._lastLocalWriteAt || 0) < 700) return;
 
-      scheduleSave();
-    },
+              if (isEmptyObject(row.state_json)) return;
 
-    stopService: () => {
-      set((s) => {
-        const first = getFirstBlockId(s.horaires, s.rotationMinutes);
-        return {
-          ...s,
-          dayStartedAt: null,
-          blockStartedAt: null,
-          serviceStartedAt: null,
-          rotationImminent: false,
-          rotationLocked: false,
-          screen: "setup",
-          setupStep: 1,
-          wallMode: false,
-          printMode: false,
-          currentBlockId: first,
-        };
-      });
+              const next = mergeRemoteIntoState(st2, row.state_json);
+              set({
+                ...next,
+                apiStatus: "pulled",
+                apiError: "",
+                _lastRemoteUpdatedAt: row.updated_at || null,
+                _error: null,
+              });
+            }
+          )
+          .subscribe();
 
-      scheduleSave();
-    },
+        set({ _subscribedKey: key });
+      };
 
-    tick: () => {
-      const s = get();
-      const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
-      if (!serviceOn) return;
+      // ---------------- Hydrate (REMOTE -> LOCAL)
+      const hydrateFromRemote = async (siteCode, dayDate) => {
+        const key = sessionKey(siteCode, dayDate);
+        const st = get();
+        if (st._sessionLoadedKey === key) return;
 
-      const currentId = normalizeBlockId(s.currentBlockId, s.horaires);
-      const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
+        set({ _error: null, apiStatus: "syncing", apiError: "" });
 
-      if (shouldSyncToday) {
-        const now = new Date();
-        const sysStartMin = getBlockStartMinForNow(s.horaires, s.rotationMinutes, now);
+        try {
+          const row = await loadSession(siteCode, dayDate);
 
-        if (sysStartMin != null) {
-          const sysBlockId = String(sysStartMin);
-          if (sysBlockId !== currentId) {
-            set((prev) => {
-              const assignments = { ...(prev.assignments || {}) };
-              const skipRotation = { ...(prev.skipRotation || {}) };
-              const pausePrevPoste = { ...(prev.pausePrevPoste || {}) };
+          if (!row || isEmptyObject(row.state_json)) {
+            // ✅ pas de remote OU remote vide => on garde le local (persist) + on marque loaded
+            // ⚠️ on initialise currentBlockId si besoin
+            const base = { ...get(), siteCode, dayDate };
+            if (!base.currentBlockId || base.currentBlockId === "0") {
+              base.currentBlockId = getFirstBlockId(base.horaires, base.rotationMinutes);
+            }
 
-              if (!assignments[sysBlockId]) {
-                const prevMap = assignments?.[currentId] || {};
-                const carried = {};
-                (prev.dayStaff || []).forEach((n) => {
-                  const nn = normalizeName(n);
-                  carried[nn] = prevMap[nn] ?? "";
+            set({
+              ...base,
+              _sessionLoadedKey: key,
+              _lastRemoteUpdatedAt: row?.updated_at || null,
+              apiStatus: "pulled",
+              apiError: "",
+            });
+
+            // tente de push si possible (sinon c’est ok, localStorage garde tout)
+            await doSaveNow();
+          } else {
+            const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
+
+            if (!merged.currentBlockId || merged.currentBlockId === "0") {
+              merged.currentBlockId = getFirstBlockId(merged.horaires, merged.rotationMinutes);
+            }
+
+            set({
+              ...merged,
+              _sessionLoadedKey: key,
+              _lastRemoteUpdatedAt: row.updated_at || null,
+              apiStatus: "pulled",
+              apiError: "",
+            });
+          }
+
+          await ensureRealtimeSubscribed(siteCode, dayDate);
+        } catch (e) {
+          const msg = String(e?.message || e);
+          set({
+            apiStatus: "error",
+            apiError: prettifyApiError(msg),
+            _error: msg,
+          });
+        }
+      };
+
+      // -----------------------------------------------------
+      // Public API
+      return {
+        ...defaultState,
+
+        // ✅ à appeler au démarrage (Setup/Cockpit)
+        ensureSessionLoaded: async () => {
+          const s = get();
+          await hydrateFromRemote(s.siteCode, s.dayDate);
+        },
+
+        // ---------- site/date (clé = site+date)
+        setSiteCode: async (siteCode) => {
+          const v = String(siteCode || "").trim().toUpperCase();
+          if (!v) return;
+
+          set((s) => ({ ...s, siteCode: v, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+          await hydrateFromRemote(v, get().dayDate);
+        },
+
+        setDayDate: async (dayDate) => {
+          const d = String(dayDate || "").slice(0, 10);
+          set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+          await hydrateFromRemote(get().siteCode, d);
+        },
+
+        // ---------- navigation
+        goSetup: () => set((s) => ({ ...s, screen: "setup" })),
+        goCockpit: () => set((s) => ({ ...s, screen: "cockpit" })),
+
+        setSetupStep: (setupStep) => set((s) => ({ ...s, setupStep })),
+
+        // ---------- modes UI
+        setWallMode: (wallMode) => set((s) => ({ ...s, wallMode: !!wallMode })),
+        enterPrintMode: () => set((s) => ({ ...s, printMode: true })),
+        exitPrintMode: () => set((s) => ({ ...s, printMode: false })),
+
+        // ---------- sync blocks
+        setSyncBlocksToSystemClock: (value) => {
+          set((s) => ({ ...s, syncBlocksToSystemClock: !!value }));
+          scheduleSave();
+        },
+
+        // ---------- pauses config
+        setPauseWaveSize: (pauseWaveSize) => {
+          set((s) => {
+            const max = Math.max(1, s.dayStaff?.length || 1);
+            const v = Math.max(1, Math.min(max, Number(pauseWaveSize) || 1));
+            return { ...s, pauseWaveSize: v };
+          });
+          scheduleSave();
+        },
+
+        // ---------- référentiels
+        addPreparateurToList: (name) => {
+          const n = normalizeName(name);
+          if (!n) return;
+          set((s) => {
+            if (s.preparateursList.includes(n)) return s;
+            return { ...s, preparateursList: [...s.preparateursList, n].sort() };
+          });
+          scheduleSave();
+        },
+
+        removePreparateurFromList: (name) => {
+          const upper = normalizeName(name);
+          set((s) => {
+            const preparateursList = (s.preparateursList || []).filter((x) => x !== upper);
+            const dayStaff = (s.dayStaff || []).filter((x) => x !== upper);
+
+            const assignments = { ...(s.assignments || {}) };
+            for (const bid of Object.keys(assignments)) {
+              const copy = { ...(assignments[bid] || {}) };
+              delete copy[upper];
+              assignments[bid] = copy;
+            }
+
+            const skipRotation = { ...(s.skipRotation || {}) };
+            for (const bid of Object.keys(skipRotation)) {
+              const copy = { ...(skipRotation[bid] || {}) };
+              delete copy[upper];
+              skipRotation[bid] = copy;
+            }
+
+            const pausePrevPoste = { ...(s.pausePrevPoste || {}) };
+            for (const bid of Object.keys(pausePrevPoste)) {
+              const copy = { ...(pausePrevPoste[bid] || {}) };
+              delete copy[upper];
+              pausePrevPoste[bid] = copy;
+            }
+
+            const pauseTakenAt = { ...(s.pauseTakenAt || {}) };
+            delete pauseTakenAt[upper];
+
+            const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
+            delete returnAlertUntil[upper];
+
+            const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
+
+            return {
+              ...s,
+              preparateursList,
+              dayStaff,
+              assignments,
+              skipRotation,
+              pausePrevPoste,
+              pauseTakenAt,
+              returnAlertUntil,
+              pauseWaveSize,
+            };
+          });
+          scheduleSave();
+        },
+
+        addCoordoToList: (name) => {
+          const n = normalizeName(name);
+          if (!n) return;
+          set((s) => {
+            if (s.coordosList.includes(n)) return s;
+            return { ...s, coordosList: [...s.coordosList, n].sort() };
+          });
+          scheduleSave();
+        },
+
+        removeCoordoFromList: (name) => {
+          const upper = normalizeName(name);
+          set((s) => {
+            const coordosList = (s.coordosList || []).filter((x) => x !== upper);
+            const coordinator = normalizeName(s.coordinator) === upper ? "" : s.coordinator;
+            return { ...s, coordosList, coordinator };
+          });
+          scheduleSave();
+        },
+
+        // ---------- config journée
+        setCoordinator: (coordinator) => {
+          const c = normalizeName(coordinator);
+          set((s) => ({ ...s, coordinator: c }));
+          scheduleSave();
+        },
+
+        toggleDayStaff: (name) => {
+          const upper = normalizeName(name);
+          if (!upper) return;
+
+          set((s) => {
+            const exists = s.dayStaff.includes(upper);
+            const dayStaff = exists ? s.dayStaff.filter((x) => x !== upper) : [...s.dayStaff, upper].sort();
+
+            const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
+
+            const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
+            const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
+
+            const assignments = { ...s.assignments };
+            const bid = serviceOn ? normalizeBlockId(s.currentBlockId || setupBlockId, s.horaires) : setupBlockId;
+
+            if (!assignments[bid]) assignments[bid] = {};
+            const copy = { ...assignments[bid] };
+
+            if (exists) delete copy[upper];
+            else copy[upper] = copy[upper] ?? "";
+
+            assignments[bid] = copy;
+
+            return { ...s, dayStaff, pauseWaveSize, assignments, currentBlockId: bid };
+          });
+
+          scheduleSave();
+        },
+
+        // ---------- placement initial (setup)
+        setInitialAssignment: (nom, poste) => {
+          const s = get();
+          const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
+
+          const blockId = serviceOn
+            ? normalizeBlockId(s.currentBlockId || "0", s.horaires)
+            : getFirstBlockId(s.horaires, s.rotationMinutes);
+
+          const upperNom = normalizeName(nom);
+          const p = normalizePoste(poste);
+          if (!upperNom) return;
+
+          set((prev) => {
+            const assignments = { ...prev.assignments };
+            if (!assignments[blockId]) assignments[blockId] = {};
+            assignments[blockId] = { ...assignments[blockId], [upperNom]: p };
+            return { ...prev, assignments, currentBlockId: blockId };
+          });
+
+          scheduleSave();
+        },
+
+        // ---------- smart fill
+        fillMissingAssignmentsFromPrevBlock: () => {
+          set((s) => {
+            const bid = normalizeBlockId(s.currentBlockId, s.horaires);
+            const prevId = getPrevBlockId(s.horaires, s.rotationMinutes, bid);
+            if (!prevId) return s;
+
+            const { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
+            const prevMap = (s.assignments || {})[prevId] || {};
+            const curMap = assignments[bid] || {};
+
+            const nextMap = { ...curMap };
+            for (const rawName of s.dayStaff || []) {
+              const name = normalizeName(rawName);
+              const curPoste = normalizePoste(nextMap[name]);
+              if (curPoste) continue;
+
+              const prevPoste = normalizePoste(prevMap[name]);
+              if (prevPoste) nextMap[name] = prevPoste;
+            }
+
+            assignments[bid] = nextMap;
+            return { ...s, assignments, skipRotation, pausePrevPoste, currentBlockId: bid };
+          });
+
+          scheduleSave();
+        },
+
+        // ---------- FORCER bloc (désactive sync)
+        setCurrentBlockManual: (blockId) => {
+          set((s) => {
+            const bid = String(blockId ?? "");
+            const curId = normalizeBlockId(s.currentBlockId, s.horaires);
+            const syncBlocksToSystemClock = false;
+
+            let { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
+            const curMaps = ensureBlockMaps(s, curId);
+
+            if (!s.assignments?.[bid]) {
+              const prev = curMaps.assignments?.[curId] || {};
+              const carried = {};
+              (s.dayStaff || []).forEach((n) => (carried[normalizeName(n)] = prev[normalizeName(n)] ?? ""));
+              assignments[bid] = carried;
+            }
+
+            if (!s.skipRotation?.[bid]) {
+              const prevSkip = curMaps.skipRotation?.[curId] || {};
+              const carriedSkip = {};
+              (s.dayStaff || []).forEach((n) => (carriedSkip[normalizeName(n)] = !!prevSkip[normalizeName(n)]));
+              skipRotation[bid] = carriedSkip;
+            }
+
+            if (!s.pausePrevPoste?.[bid]) {
+              const prevPrev = curMaps.pausePrevPoste?.[curId] || {};
+              const carriedPrev = {};
+              (s.dayStaff || []).forEach((n) => (carriedPrev[normalizeName(n)] = prevPrev[normalizeName(n)] ?? ""));
+              pausePrevPoste[bid] = carriedPrev;
+            }
+
+            const startMin = Number(bid);
+            const blockStartedAt = Number.isFinite(startMin)
+              ? blockStartTimestamp(s.dayDate, startMin, true)
+              : Date.now();
+
+            return {
+              ...s,
+              syncBlocksToSystemClock,
+              currentBlockId: bid,
+              blockStartedAt,
+              rotationImminent: false,
+              rotationLocked: false,
+              assignments,
+              skipRotation,
+              pausePrevPoste,
+            };
+          });
+
+          scheduleSave();
+        },
+
+        // ---------- runtime
+        startService: () => {
+          set((s) => {
+            if (!s.coordinator || s.dayStaff.length === 0) return s;
+
+            const blocks = buildBlocks(s.horaires, s.rotationMinutes);
+            const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
+
+            const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
+
+            const now = new Date();
+            const sysStartMin = shouldSyncToday ? getBlockStartMinForNow(s.horaires, s.rotationMinutes, now) : null;
+            const first = sysStartMin != null ? String(sysStartMin) : firstDefault;
+
+            const assignments = { ...s.assignments };
+            if (!assignments[first] && assignments[firstDefault] && first !== firstDefault) {
+              assignments[first] = { ...assignments[firstDefault] };
+            }
+
+            const blockAssignments = assignments?.[first] || {};
+            const allHavePoste = s.dayStaff.every((n) => {
+              const nn = normalizeName(n);
+              return blockAssignments[nn] && blockAssignments[nn] !== "";
+            });
+            if (!allHavePoste) return s;
+
+            const pauseTakenAt = { ...(s.pauseTakenAt || {}) };
+            s.dayStaff.forEach((n) => (pauseTakenAt[normalizeName(n)] = pauseTakenAt[normalizeName(n)] ?? null));
+
+            const nowMs = Date.now();
+            const blockStartedAt = sysStartMin != null ? blockStartTimestamp(s.dayDate, sysStartMin, true) : nowMs;
+
+            const skipRotation = { ...(s.skipRotation || {}) };
+            if (!skipRotation[first]) skipRotation[first] = {};
+
+            const pausePrevPoste = { ...(s.pausePrevPoste || {}) };
+            if (!pausePrevPoste[first]) pausePrevPoste[first] = {};
+
+            return {
+              ...s,
+              screen: "cockpit",
+              setupStep: 1,
+              dayStartedAt: nowMs,
+              blockStartedAt,
+              serviceStartedAt: nowMs,
+              currentBlockId: first,
+              rotationImminent: false,
+              rotationLocked: false,
+              pauseTakenAt,
+              assignments,
+              skipRotation,
+              pausePrevPoste,
+            };
+          });
+
+          scheduleSave();
+        },
+
+        stopService: () => {
+          set((s) => {
+            const first = getFirstBlockId(s.horaires, s.rotationMinutes);
+            return {
+              ...s,
+              dayStartedAt: null,
+              blockStartedAt: null,
+              serviceStartedAt: null,
+              rotationImminent: false,
+              rotationLocked: false,
+              screen: "setup",
+              setupStep: 1,
+              wallMode: false,
+              printMode: false,
+              currentBlockId: first,
+            };
+          });
+
+          scheduleSave();
+        },
+
+        tick: () => {
+          const s = get();
+          const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
+          if (!serviceOn) return;
+
+          const currentId = normalizeBlockId(s.currentBlockId, s.horaires);
+          const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
+
+          if (shouldSyncToday) {
+            const now = new Date();
+            const sysStartMin = getBlockStartMinForNow(s.horaires, s.rotationMinutes, now);
+
+            if (sysStartMin != null) {
+              const sysBlockId = String(sysStartMin);
+              if (sysBlockId !== currentId) {
+                set((prev) => {
+                  const assignments = { ...(prev.assignments || {}) };
+                  const skipRotation = { ...(prev.skipRotation || {}) };
+                  const pausePrevPoste = { ...(prev.pausePrevPoste || {}) };
+
+                  if (!assignments[sysBlockId]) {
+                    const prevMap = assignments?.[currentId] || {};
+                    const carried = {};
+                    (prev.dayStaff || []).forEach((n) => {
+                      const nn = normalizeName(n);
+                      carried[nn] = prevMap[nn] ?? "";
+                    });
+                    assignments[sysBlockId] = carried;
+                  }
+
+                  if (!skipRotation[sysBlockId]) skipRotation[sysBlockId] = {};
+
+                  if (!pausePrevPoste[sysBlockId]) {
+                    const prevPrev = pausePrevPoste?.[currentId] || {};
+                    const carriedPrev = {};
+                    (prev.dayStaff || []).forEach((n) => {
+                      const nn = normalizeName(n);
+                      carriedPrev[nn] = prevPrev[nn] ?? "";
+                    });
+                    pausePrevPoste[sysBlockId] = carriedPrev;
+                  }
+
+                  return {
+                    ...prev,
+                    currentBlockId: sysBlockId,
+                    blockStartedAt: blockStartTimestamp(prev.dayDate, sysStartMin, true),
+                    assignments,
+                    skipRotation,
+                    pausePrevPoste,
+                    rotationImminent: false,
+                    rotationLocked: false,
+                  };
                 });
-                assignments[sysBlockId] = carried;
+
+                scheduleSave();
+                return;
               }
+            }
+          }
 
-              if (!skipRotation[sysBlockId]) skipRotation[sysBlockId] = {};
+          const blockStart = s.blockStartedAt || s.serviceStartedAt;
+          if (!blockStart) return;
 
-              if (!pausePrevPoste[sysBlockId]) {
-                const prevPrev = pausePrevPoste?.[currentId] || {};
-                const carriedPrev = {};
-                (prev.dayStaff || []).forEach((n) => {
-                  const nn = normalizeName(n);
-                  carriedPrev[nn] = prevPrev[nn] ?? "";
-                });
-                pausePrevPoste[sysBlockId] = carriedPrev;
-              }
+          const elapsedMin = Math.floor((Date.now() - blockStart) / 60000);
+          const warnFrom = s.rotationMinutes - s.rotationWarnMinutes;
 
+          const nextRotationImminent = elapsedMin >= warnFrom && elapsedMin < s.rotationMinutes;
+          const nextRotationLocked = elapsedMin >= s.rotationMinutes;
+
+          const rotationImminent = s.rotationLocked ? false : nextRotationImminent;
+          const rotationLocked = s.rotationLocked ? true : nextRotationLocked;
+
+          if (rotationImminent === s.rotationImminent && rotationLocked === s.rotationLocked) return;
+          set({ rotationImminent, rotationLocked, currentBlockId: currentId });
+        },
+
+        validateRotation: () => {
+          set((s) => {
+            const blocks = buildBlocks(s.horaires, s.rotationMinutes);
+            const curId = normalizeBlockId(s.currentBlockId, s.horaires);
+
+            const currentMap = (s.assignments || {})[curId] || {};
+            const missing = (s.dayStaff || []).filter((raw) => {
+              const n = normalizeName(raw);
+              const p = normalizePoste(currentMap[n]);
+              return !p;
+            });
+            if (missing.length > 0) return s;
+
+            const currentIndex = blocks.findIndex((b) => b.id === curId);
+            const nextObj = currentIndex >= 0 ? blocks[currentIndex + 1] : null;
+            if (!nextObj) {
               return {
-                ...prev,
-                currentBlockId: sysBlockId,
-                blockStartedAt: blockStartTimestamp(prev.dayDate, sysStartMin, true),
-                assignments,
-                skipRotation,
-                pausePrevPoste,
+                ...s,
+                currentBlockId: curId,
+                blockStartedAt: Date.now(),
                 rotationImminent: false,
                 rotationLocked: false,
               };
-            });
+            }
 
-            scheduleSave();
-            return;
-          }
-        }
-      }
+            const nextBlockId = nextObj.id;
+            const assignments = { ...(s.assignments || {}) };
+            const existingNext = assignments?.[nextBlockId] || {};
 
-      const blockStart = s.blockStartedAt || s.serviceStartedAt;
-      if (!blockStart) return;
+            const skipRotation = { ...(s.skipRotation || {}) };
+            const skipCur = skipRotation?.[curId] || {};
 
-      const elapsedMin = Math.floor((Date.now() - blockStart) / 60000);
-      const warnFrom = s.rotationMinutes - s.rotationWarnMinutes;
+            const carried = {};
+            for (const raw of s.dayStaff || []) {
+              const upper = normalizeName(raw);
+              const isSkipped = !!skipCur?.[upper];
+              if (isSkipped) carried[upper] = currentMap[upper] ?? "";
+              else carried[upper] = currentMap[upper] ?? existingNext[upper] ?? "";
+            }
 
-      const nextRotationImminent = elapsedMin >= warnFrom && elapsedMin < s.rotationMinutes;
-      const nextRotationLocked = elapsedMin >= s.rotationMinutes;
+            assignments[nextBlockId] = carried;
+            skipRotation[nextBlockId] = {};
 
-      const rotationImminent = s.rotationLocked ? false : nextRotationImminent;
-      const rotationLocked = s.rotationLocked ? true : nextRotationLocked;
+            return {
+              ...s,
+              assignments,
+              skipRotation,
+              blockStartedAt: Date.now(),
+              currentBlockId: nextBlockId,
+              rotationImminent: false,
+              rotationLocked: false,
+            };
+          });
 
-      if (rotationImminent === s.rotationImminent && rotationLocked === s.rotationLocked) return;
-      set({ rotationImminent, rotationLocked, currentBlockId: currentId });
-    },
+          scheduleSave();
+        },
 
-    validateRotation: () => {
-      set((s) => {
-        const blocks = buildBlocks(s.horaires, s.rotationMinutes);
-        const curId = normalizeBlockId(s.currentBlockId, s.horaires);
+        setAssignment: (blockId, nom, poste) => {
+          set((s) => {
+            const upperNom = normalizeName(nom);
+            const p = normalizePoste(poste);
+            const bid = normalizeBlockId(blockId, s.horaires);
 
-        const currentMap = (s.assignments || {})[curId] || {};
-        const missing = (s.dayStaff || []).filter((raw) => {
-          const n = normalizeName(raw);
-          const p = normalizePoste(currentMap[n]);
-          return !p;
-        });
-        if (missing.length > 0) return s;
+            const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
+            const prevPoste = normalizePoste(assignments?.[bid]?.[upperNom]);
 
-        const currentIndex = blocks.findIndex((b) => b.id === curId);
-        const nextObj = currentIndex >= 0 ? blocks[currentIndex + 1] : null;
-        if (!nextObj) {
-          return { ...s, currentBlockId: curId, blockStartedAt: Date.now(), rotationImminent: false, rotationLocked: false };
-        }
+            if (p === "PAUSE" && prevPoste && prevPoste !== "PAUSE") {
+              pausePrevPoste[bid] = { ...(pausePrevPoste[bid] || {}), [upperNom]: prevPoste };
+            }
 
-        const nextBlockId = nextObj.id;
-        const assignments = { ...(s.assignments || {}) };
-        const existingNext = assignments?.[nextBlockId] || {};
+            assignments[bid] = { ...assignments[bid], [upperNom]: p };
 
-        const skipRotation = { ...(s.skipRotation || {}) };
-        const skipCur = skipRotation?.[curId] || {};
+            let pauseTakenAt = s.pauseTakenAt || {};
+            if (p === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
+              if (!pauseTakenAt[upperNom]) {
+                pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
+              }
+            }
 
-        const carried = {};
-        for (const raw of s.dayStaff || []) {
-          const upper = normalizeName(raw);
-          const isSkipped = !!skipCur?.[upper];
-          if (isSkipped) carried[upper] = currentMap[upper] ?? "";
-          else carried[upper] = currentMap[upper] ?? existingNext[upper] ?? "";
-        }
+            return { ...s, assignments, pausePrevPoste, pauseTakenAt };
+          });
 
-        assignments[nextBlockId] = carried;
-        skipRotation[nextBlockId] = {};
+          scheduleSave();
+        },
 
-        return {
-          ...s,
-          assignments,
-          skipRotation,
-          blockStartedAt: Date.now(),
-          currentBlockId: nextBlockId,
-          rotationImminent: false,
-          rotationLocked: false,
-        };
-      });
+        toggleSkipRotation: (blockId, nom) => {
+          set((s) => {
+            const bid = normalizeBlockId(blockId, s.horaires);
+            const upperNom = normalizeName(nom);
+            if (!upperNom) return s;
 
-      scheduleSave();
-    },
+            const skipRotation = { ...(s.skipRotation || {}) };
+            if (!skipRotation[bid]) skipRotation[bid] = {};
+            skipRotation[bid] = { ...skipRotation[bid], [upperNom]: !skipRotation[bid][upperNom] };
 
-    setAssignment: (blockId, nom, poste) => {
-      set((s) => {
-        const upperNom = normalizeName(nom);
-        const p = normalizePoste(poste);
-        const bid = normalizeBlockId(blockId, s.horaires);
+            return { ...s, skipRotation };
+          });
 
-        const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
-        const prevPoste = normalizePoste(assignments?.[bid]?.[upperNom]);
+          scheduleSave();
+        },
 
-        if (p === "PAUSE" && prevPoste && prevPoste !== "PAUSE") {
-          pausePrevPoste[bid] = { ...(pausePrevPoste[bid] || {}), [upperNom]: prevPoste };
-        }
+        returnFromPause: (blockId, nom) => {
+          set((s) => {
+            const bid = normalizeBlockId(blockId, s.horaires);
+            const upperNom = normalizeName(nom);
+            if (!upperNom) return s;
 
-        assignments[bid] = { ...assignments[bid], [upperNom]: p };
+            const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
 
-        let pauseTakenAt = s.pauseTakenAt || {};
-        if (p === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
-          if (!pauseTakenAt[upperNom]) {
-            pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
-          }
-        }
+            const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
+            if (cur !== "PAUSE") return s;
 
-        return { ...s, assignments, pausePrevPoste, pauseTakenAt };
-      });
-
-      scheduleSave();
-    },
-
-    toggleSkipRotation: (blockId, nom) => {
-      set((s) => {
-        const bid = normalizeBlockId(blockId, s.horaires);
-        const upperNom = normalizeName(nom);
-        if (!upperNom) return s;
-
-        const skipRotation = { ...(s.skipRotation || {}) };
-        if (!skipRotation[bid]) skipRotation[bid] = {};
-        skipRotation[bid] = { ...skipRotation[bid], [upperNom]: !skipRotation[bid][upperNom] };
-
-        return { ...s, skipRotation };
-      });
-
-      scheduleSave();
-    },
-
-    returnFromPause: (blockId, nom) => {
-      set((s) => {
-        const bid = normalizeBlockId(blockId, s.horaires);
-        const upperNom = normalizeName(nom);
-        if (!upperNom) return s;
-
-        const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
-
-        const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
-        if (cur !== "PAUSE") return s;
-
-        const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
-        assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
-
-        const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
-        returnAlertUntil[upperNom] = Date.now() + 2 * 60 * 1000;
-
-        return { ...s, assignments, returnAlertUntil };
-      });
-
-      scheduleSave();
-    },
-
-    returnAllEndedPausesCurrentBlock: () => {
-      set((s) => {
-        const bid = normalizeBlockId(s.currentBlockId, s.horaires);
-        const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
-
-        const durMs = (Number(s.pauseDurationMinutes) || 30) * 60000;
-        const now = Date.now();
-        const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
-
-        for (const nom of s.dayStaff || []) {
-          const upperNom = normalizeName(nom);
-          const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
-          if (cur !== "PAUSE") continue;
-
-          const started = s.pauseTakenAt?.[upperNom];
-          if (!started) continue;
-
-          if (now - started >= durMs) {
             const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
             assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
+
+            const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
             returnAlertUntil[upperNom] = Date.now() + 2 * 60 * 1000;
-          }
-        }
 
-        return { ...s, assignments, returnAlertUntil, pausePrevPoste };
-      });
+            return { ...s, assignments, returnAlertUntil };
+          });
 
-      scheduleSave();
+          scheduleSave();
+        },
+
+        returnAllEndedPausesCurrentBlock: () => {
+          set((s) => {
+            const bid = normalizeBlockId(s.currentBlockId, s.horaires);
+            const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
+
+            const durMs = (Number(s.pauseDurationMinutes) || 30) * 60000;
+            const now = Date.now();
+            const returnAlertUntil = { ...(s.returnAlertUntil || {}) };
+
+            for (const nom of s.dayStaff || []) {
+              const upperNom = normalizeName(nom);
+              const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
+              if (cur !== "PAUSE") continue;
+
+              const started = s.pauseTakenAt?.[upperNom];
+              if (!started) continue;
+
+              if (now - started >= durMs) {
+                const prev = normalizePoste(pausePrevPoste?.[bid]?.[upperNom]);
+                assignments[bid] = { ...assignments[bid], [upperNom]: prev || "" };
+                returnAlertUntil[upperNom] = Date.now() + 2 * 60 * 1000;
+              }
+            }
+
+            return { ...s, assignments, returnAlertUntil, pausePrevPoste };
+          });
+
+          scheduleSave();
+        },
+
+        // ✅ Reset JOURNÉE (garde référentiels + règles)
+        resetDay: () => {
+          set((s) => {
+            const first = getFirstBlockId(s.horaires, s.rotationMinutes);
+            return {
+              ...s,
+              screen: "setup",
+              setupStep: 1,
+              wallMode: false,
+              printMode: false,
+
+              dayDate: todayISO(),
+              coordinator: "",
+              dayStaff: [],
+
+              dayStartedAt: null,
+              blockStartedAt: null,
+              serviceStartedAt: null,
+              currentBlockId: first,
+              rotationImminent: false,
+              rotationLocked: false,
+
+              assignments: {},
+              pauseTakenAt: {},
+              skipRotation: {},
+              pausePrevPoste: {},
+              returnAlertUntil: {},
+
+              syncBlocksToSystemClock: true,
+            };
+          });
+
+          scheduleSave();
+        },
+      };
     },
+    {
+      name: "driveops_v2", // ✅ anti-reset refresh
+      version: 1,
+      partialize: (s) => ({
+        // ✅ ce qu’on veut garder au refresh
+        siteCode: s.siteCode,
+        dayDate: s.dayDate,
 
-    // ✅ Reset JOURNÉE (garde référentiels + règles)
-    resetDay: () => {
-      set((s) => {
-        const first = getFirstBlockId(s.horaires, s.rotationMinutes);
-        return {
-          ...s,
-          screen: "setup",
-          setupStep: 1,
-          wallMode: false,
-          printMode: false,
+        screen: s.screen,
+        setupStep: s.setupStep,
+        wallMode: s.wallMode,
+        printMode: s.printMode,
 
-          dayDate: todayISO(),
-          coordinator: "",
-          dayStaff: [],
+        preparateursList: s.preparateursList,
+        coordosList: s.coordosList,
+        postes: s.postes,
+        horaires: s.horaires,
 
-          dayStartedAt: null,
-          blockStartedAt: null,
-          serviceStartedAt: null,
-          currentBlockId: first,
-          rotationImminent: false,
-          rotationLocked: false,
+        rotationMinutes: s.rotationMinutes,
+        rotationWarnMinutes: s.rotationWarnMinutes,
+        pauseAfterMinutes: s.pauseAfterMinutes,
+        pauseDurationMinutes: s.pauseDurationMinutes,
+        pauseWaveSize: s.pauseWaveSize,
+        syncBlocksToSystemClock: s.syncBlocksToSystemClock,
 
-          assignments: {},
-          pauseTakenAt: {},
-          skipRotation: {},
-          pausePrevPoste: {},
-          returnAlertUntil: {},
+        coordinator: s.coordinator,
+        dayStaff: s.dayStaff,
 
-          syncBlocksToSystemClock: true,
-        };
-      });
+        dayStartedAt: s.dayStartedAt,
+        blockStartedAt: s.blockStartedAt,
+        serviceStartedAt: s.serviceStartedAt,
+        currentBlockId: s.currentBlockId,
 
-      scheduleSave();
-    },
-  };
-});
+        rotationImminent: s.rotationImminent,
+        rotationLocked: s.rotationLocked,
+
+        assignments: s.assignments,
+        pauseTakenAt: s.pauseTakenAt,
+        skipRotation: s.skipRotation,
+        pausePrevPoste: s.pausePrevPoste,
+        returnAlertUntil: s.returnAlertUntil,
+
+        // ✅ status pour affichage UI
+        apiStatus: s.apiStatus,
+        apiError: s.apiError,
+      }),
+    }
+  )
+);
