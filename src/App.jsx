@@ -4,12 +4,8 @@ import { supabase } from "./services/supabaseClient";
 import { getPairedSiteCode } from "./services/deviceApi";
 import PairDevice from "./pages/PairDevice";
 import PinLogin from "./pages/PinLogin";
-
-// ✅ adapte selon ton projet :
-import Setup from "./pages/Setup";        // si Setup est dans src/pages/Setup.jsx
-// import Setup from "./components/Setup"; // si Setup est dans src/components/Setup.jsx
+import Setup from "./pages/Setup";
 import Cockpit from "./components/Cockpit";
-
 import { useDriveStore } from "./store/useDriveStore";
 
 export default function App() {
@@ -24,20 +20,17 @@ export default function App() {
   const [phase, setPhase] = useState("boot"); // boot | need_pairing | need_login | ready
   const [session, setSession] = useState(null);
 
-  // --- Tick cockpit (1s)
   useEffect(() => {
     const id = setInterval(() => tick(), 1000);
     return () => clearInterval(id);
   }, [tick]);
 
-  // --- Boot: pairing + session auth
   useEffect(() => {
     (async () => {
       try {
         const paired = await getPairedSiteCode();
         if (!paired) return setPhase("need_pairing");
 
-        // inject siteCode store si différent
         if (paired && String(siteCode || "").toUpperCase() !== paired) {
           setSiteCode(paired);
         }
@@ -47,7 +40,6 @@ export default function App() {
         setSession(s);
 
         if (!s) return setPhase("need_login");
-
         setPhase("ready");
       } catch {
         setPhase("need_pairing");
@@ -56,7 +48,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- Auth listener (logout/login)
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s || null);
@@ -65,13 +56,21 @@ export default function App() {
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  // --- Charger la session “site+date” une fois connecté & prêt
-  const canHydrate = useMemo(() => phase === "ready" && !!session && !!siteCode && !!dayDate, [phase, session, siteCode, dayDate]);
+  const canHydrate = useMemo(
+    () => phase === "ready" && !!session && !!siteCode && !!dayDate,
+    [phase, session, siteCode, dayDate]
+  );
 
   useEffect(() => {
     if (!canHydrate) return;
     ensureSessionLoaded?.();
   }, [canHydrate, ensureSessionLoaded]);
+
+  const logout = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setPhase("need_login");
+  };
 
   if (phase === "boot") {
     return (
@@ -105,6 +104,19 @@ export default function App() {
     );
   }
 
-  // ✅ App normal
-  return screen === "cockpit" ? <Cockpit /> : <Setup />;
+  // ✅ App normal + header logout
+  return (
+    <div className="page">
+      <div className="card" style={{ marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="muted">
+          Connecté : <b>{session?.user?.email || "—"}</b> — Site : <b>{siteCode}</b>
+        </div>
+        <button className="btn ghost" onClick={logout} title="Se déconnecter">
+          🚪 Déconnexion
+        </button>
+      </div>
+
+      {screen === "cockpit" ? <Cockpit /> : <Setup />}
+    </div>
+  );
 }

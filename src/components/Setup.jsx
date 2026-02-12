@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { getFirstBlockId } from "../utils/blocks";
+import { supabase } from "../services/supabaseClient"; // ✅ AJOUT
 
 export default function Setup() {
   const {
@@ -45,7 +46,7 @@ export default function Setup() {
 
     startService,
     goCockpit,
-    resetDay, // ✅ ton store expose resetDay, pas resetAll
+    resetDay,
 
     serviceStartedAt,
     dayStartedAt,
@@ -71,13 +72,11 @@ export default function Setup() {
   const blockAssignments = assignments?.[effectiveBlockId] || {};
   const selectedStaff = useMemo(() => (dayStaff || []).slice().sort(), [dayStaff]);
 
-  // ✅ normalisation identique au store
   const norm = (s) => String(s || "").trim().toUpperCase();
 
   const hasCoordinator = norm(coordinator) !== "";
   const hasStaff = (dayStaff || []).length > 0;
 
-  // ✅ FIX: lire les postes avec la clé normalisée
   const allHavePoste = selectedStaff.every((nom) => {
     const key = norm(nom);
     return blockAssignments[key] && blockAssignments[key] !== "";
@@ -104,6 +103,16 @@ export default function Setup() {
     () => Math.max(1, Math.min(dayStaff?.length || 1, 6)),
     [dayStaff]
   );
+
+  // ✅ AJOUT : Déconnexion
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+      // App.jsx écoutera onAuthStateChange et reviendra sur l’écran login automatiquement
+    } catch (e) {
+      console.error(e);
+    }
+  }
 
   return (
     <div className="page">
@@ -155,6 +164,15 @@ export default function Setup() {
               title="Sauvegarde (local -> remote)"
             >
               💾 Push
+            </button>
+
+            {/* ✅ AJOUT : bouton déconnexion */}
+            <button
+              className="btn ghost"
+              onClick={handleLogout}
+              title="Se déconnecter"
+            >
+              🚪 Déconnexion
             </button>
 
             <div className="muted small" style={{ minWidth: 220 }}>
