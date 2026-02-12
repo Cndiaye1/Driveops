@@ -34,6 +34,7 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
       if (!c) throw new Error("Code requis.");
       if (!p) throw new Error("PIN requis.");
 
+      // email “virtuel” : SITE__CODE@driveops.local
       const email = `${sc}__${c}@driveops.local`;
 
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -41,8 +42,12 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
         password: p,
       });
 
-      if (error) throw new Error("Code/PIN incorrect.");
-      onLogged?.(data.session);
+      // ✅ amélioration #1: erreur “vraie”
+      if (error) {
+        throw new Error(error.message || "Connexion impossible.");
+      }
+
+      onLogged?.(data?.session);
     } catch (e) {
       setErr(String(e?.message || e));
     } finally {
@@ -64,6 +69,7 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
             onChange={(e) => setCode(e.target.value)}
             placeholder="CODE (ex: BAMBA)"
             style={{ minWidth: 220 }}
+            autoComplete="username"
           />
           <input
             value={pin}
@@ -72,13 +78,23 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
             type="password"
             inputMode="numeric"
             style={{ minWidth: 180 }}
+            autoComplete="current-password"
           />
           <button className="btn primary" disabled={loading} onClick={login}>
             {loading ? "..." : "➡️ Entrer"}
           </button>
+
+          {/* ✅ amélioration #2: re-pair */}
+          <button className="btn ghost" disabled={loading} onClick={onNeedPairing}>
+            🔧 Re-pair
+          </button>
         </div>
 
-        {err ? <div className="card callout warn" style={{ marginTop: 12 }}>{err}</div> : null}
+        {err ? (
+          <div className="card callout warn" style={{ marginTop: 12 }}>
+            {err}
+          </div>
+        ) : null}
       </div>
     </div>
   );

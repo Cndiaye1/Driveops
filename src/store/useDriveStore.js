@@ -97,15 +97,15 @@ function blockStartTimestamp(dayDate, blockStartMin, useSystemDate) {
 }
 
 // -----------------------------------------------------
-// Remote (Supabase) helpers
+// Remote (Supabase)
 const TABLE = "drive_sessions";
 
 function sessionKey(siteCode, dayDate) {
   return `${siteCode}__${dayDate}`;
 }
 
-function safeObj(x) {
-  return x && typeof x === "object" ? x : {};
+function isEmptyObject(x) {
+  return !!x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).length === 0;
 }
 
 function serializeState(s) {
@@ -156,16 +156,23 @@ function serializeState(s) {
   };
 }
 
+/**
+ * Merge remote -> local (remote gagne), avec garde-fous:
+ * - remote null/undefined => defaults
+ * - remote {} => defaults (⚠️ IMPORTANT: évite wipe)
+ * - migration des blockIds legacy
+ */
 function mergeRemoteIntoState(defaults, remoteJson) {
   if (!remoteJson || typeof remoteJson !== "object") return defaults;
+  if (isEmptyObject(remoteJson)) return defaults; // ✅ anti wipe
 
-  const horarios = remoteJson.horaires || defaults.horaires;
+  const horaires = remoteJson.horaires || defaults.horaires;
 
   const migrateMapByBlock = (obj) => {
     const src = obj || {};
     const out = {};
     for (const oldKey of Object.keys(src)) {
-      const newKey = normalizeBlockId(oldKey, horarios);
+      const newKey = normalizeBlockId(oldKey, horaires);
       out[newKey] = src[oldKey];
     }
     return out;
@@ -176,8 +183,8 @@ function mergeRemoteIntoState(defaults, remoteJson) {
     ...remoteJson,
   };
 
-  merged.horaires = horarios;
-  merged.currentBlockId = normalizeBlockId(merged.currentBlockId || "0", horarios);
+  merged.horaires = horaires;
+  merged.currentBlockId = normalizeBlockId(merged.currentBlockId || "0", horaires);
 
   merged.assignments = migrateMapByBlock(merged.assignments);
   merged.skipRotation = migrateMapByBlock(merged.skipRotation);
@@ -244,20 +251,26 @@ const defaultState = {
   returnAlertUntil: {},
 
   // Flags sync
-  apiStatus: "idle", // idle|syncing|pulled|pushed|error
+  apiStatus: "idle", // idle|syncing|pulled|pushed|offline|error
   apiError: "",
+
   _sessionLoadedKey: null,
   _subscribedKey: null,
+
   _saving: false,
   _lastRemoteUpdatedAt: null,
   _lastLocalWriteAt: 0,
   _error: null,
+
+  // Offline save queue
+  _pendingSave: false,
+  _retryCount: 0,
 };
 
 // -----------------------------------------------------
 // Store
 export const useDriveStore = create((set, get) => {
-  // ---------------- helpers state maps
+  // helpers maps
   const ensureBlockMaps = (s, bid) => {
     const assignments = { ...(s.assignments || {}) };
     const skipRotation = { ...(s.skipRotation || {}) };
@@ -273,7 +286,7 @@ export const useDriveStore = create((set, get) => {
   const normalizeName = (n) => String(n || "").trim().toUpperCase();
   const normalizePoste = (p) => String(p || "").trim().toUpperCase();
 
-  // ---------------- Remote: load + upsert
+  // Remote: load + upsert
   const loadSession = async (siteCode, dayDate) => {
     const { data, error } = await supabase
       .from(TABLE)
@@ -304,48 +317,100 @@ export const useDriveStore = create((set, get) => {
     return data;
   };
 
-  // ---------------- Autosave (debounce)
+  // ---------------- Autosave pro (debounce + offline queue)
   let saveTimer = null;
+  let retryTimer = null;
+
+  const scheduleRetry = () => {
+    const st = get();
+    if (!st._pendingSave) return;
+
+    // backoff simple: 1s, 2s, 4s, 8s... max 20s
+    const ms = Math.min(20000, 1000 * Math.pow(2, Math.min(4, st._retryCount || 0)));
+
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(async () => {
+      await doSaveNow();
+    }, ms);
+  };
 
   const doSaveNow = async () => {
     const st = get();
+    const key = sessionKey(st.siteCode, st.dayDate);
+
+    // ✅ Ne jamais écrire tant qu’on n’a pas hydrater la session site+date
+    if (st._sessionLoadedKey !== key) {
+      set({ apiStatus: "syncing", apiError: "" });
+      await hydrateFromRemote(st.siteCode, st.dayDate);
+    }
+
     try {
+      // offline ?
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        set({ apiStatus: "offline", _pendingSave: true, apiError: "Hors connexion — en attente…" });
+        scheduleRetry();
+        return;
+      }
+
       set({ _saving: true, _error: null, apiStatus: "syncing", apiError: "" });
 
-      const body = serializeState(st);
+      const body = serializeState(get());
       await upsertSession(st.siteCode, st.dayDate, body);
 
       set({
         _saving: false,
+        _pendingSave: false,
+        _retryCount: 0,
         _lastLocalWriteAt: Date.now(),
         apiStatus: "pushed",
         apiError: "",
       });
     } catch (e) {
+      const msg = String(e?.message || e);
+
+      // réseau / offline → on queue
+      const isNetwork =
+        msg.toLowerCase().includes("fetch") ||
+        msg.toLowerCase().includes("network") ||
+        msg.toLowerCase().includes("offline") ||
+        msg.toLowerCase().includes("timeout");
+
+      if (isNetwork) {
+        set((s) => ({
+          _saving: false,
+          apiStatus: "offline",
+          apiError: "Connexion instable — en attente…",
+          _pendingSave: true,
+          _retryCount: (s._retryCount || 0) + 1,
+        }));
+        scheduleRetry();
+        return;
+      }
+
       set({
         _saving: false,
         apiStatus: "error",
-        apiError: String(e?.message || e),
-        _error: String(e?.message || e),
+        apiError: msg,
+        _error: msg,
+        _pendingSave: false,
       });
     }
   };
 
-  // ✅ autosave robuste : si session pas chargée, on hydrate d’abord puis save
   const scheduleSave = () => {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(async () => {
-      const st = get();
-      const key = sessionKey(st.siteCode, st.dayDate);
-
-      // si pas encore “load” : on hydrate pour éviter d’écraser du remote
-      if (st._sessionLoadedKey !== key) {
-        await hydrateFromRemote(st.siteCode, st.dayDate);
-      }
-
       await doSaveNow();
     }, 350);
   };
+
+  // Auto retry on "online" event
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", () => {
+      const st = get();
+      if (st._pendingSave) doSaveNow();
+    });
+  }
 
   // ---------------- Realtime
   let currentChannel = null;
@@ -356,9 +421,7 @@ export const useDriveStore = create((set, get) => {
     if (st._subscribedKey === key) return;
 
     try {
-      if (currentChannel) {
-        await supabase.removeChannel(currentChannel);
-      }
+      if (currentChannel) await supabase.removeChannel(currentChannel);
     } catch {}
     currentChannel = null;
 
@@ -376,6 +439,9 @@ export const useDriveStore = create((set, get) => {
           const now = Date.now();
           const st2 = get();
           if (now - (st2._lastLocalWriteAt || 0) < 700) return;
+
+          // ignore remote vide
+          if (isEmptyObject(row.state_json)) return;
 
           const next = mergeRemoteIntoState(st2, row.state_json);
           set({
@@ -403,22 +469,28 @@ export const useDriveStore = create((set, get) => {
     try {
       const row = await loadSession(siteCode, dayDate);
 
-      if (!row) {
-        // pas de remote : on init defaults + on push (sans casser tes defaults)
+      if (!row || isEmptyObject(row.state_json)) {
+        // ✅ pas de remote OU remote vide => init defaults local + push (sans wipe)
         const base = { ...defaultState, siteCode, dayDate };
         base.currentBlockId = getFirstBlockId(base.horaires, base.rotationMinutes);
 
         set({
           ...base,
           _sessionLoadedKey: key,
-          _lastRemoteUpdatedAt: null,
+          _lastRemoteUpdatedAt: row?.updated_at || null,
           apiStatus: "pulled",
         });
 
-        await upsertSession(siteCode, dayDate, serializeState(get()));
-        set({ apiStatus: "pushed" });
+        // push une base propre (si auth ok / online)
+        await doSaveNow();
       } else {
         const merged = mergeRemoteIntoState({ ...defaultState, siteCode, dayDate }, row.state_json);
+
+        // si currentBlockId est encore "0" => initialise au premier bloc
+        if (!merged.currentBlockId || merged.currentBlockId === "0") {
+          merged.currentBlockId = getFirstBlockId(merged.horaires, merged.rotationMinutes);
+        }
+
         set({
           ...merged,
           _sessionLoadedKey: key,
@@ -434,7 +506,7 @@ export const useDriveStore = create((set, get) => {
     }
   };
 
-  // ---------------- Sync MANUEL (remote écrase local + fallback push si vide/absent)
+  // ---------------- Sync MANUEL (remote -> local, sinon push)
   const hydrateFromApi = async () => {
     const st = get();
     const siteCode = String(st.siteCode || "").trim().toUpperCase();
@@ -450,28 +522,16 @@ export const useDriveStore = create((set, get) => {
     try {
       const row = await loadSession(siteCode, dayDate);
 
-      // absent -> push local
-      if (!row) {
+      // absent ou vide -> push local
+      if (!row || isEmptyObject(row.state_json)) {
         await doSaveNow();
         set({ _sessionLoadedKey: sessionKey(siteCode, dayDate), apiStatus: "pushed" });
         await ensureRealtimeSubscribed(siteCode, dayDate);
         return;
       }
 
-      const remoteJson = row.state_json;
-      const emptyRemote =
-        !remoteJson || typeof remoteJson !== "object" || Object.keys(remoteJson).length === 0;
-
-      // remote vide -> push local (évite wipe)
-      if (emptyRemote) {
-        await doSaveNow();
-        set({ _sessionLoadedKey: sessionKey(siteCode, dayDate), apiStatus: "pushed" });
-        await ensureRealtimeSubscribed(siteCode, dayDate);
-        return;
-      }
-
-      // sinon : remote écrase local
-      const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, remoteJson);
+      // remote écrase local
+      const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
       set({
         ...merged,
         _sessionLoadedKey: sessionKey(siteCode, dayDate),
@@ -487,21 +547,7 @@ export const useDriveStore = create((set, get) => {
   };
 
   const pushToApi = async () => {
-    const st = get();
-    const siteCode = String(st.siteCode || "").trim().toUpperCase();
-    const dayDate = String(st.dayDate || "").slice(0, 10);
-
-    if (!siteCode || !dayDate) {
-      set({ apiStatus: "error", apiError: "Site/date manquants" });
-      return;
-    }
-
-    const key = sessionKey(siteCode, dayDate);
-    if (st._sessionLoadedKey !== key) {
-      await hydrateFromRemote(siteCode, dayDate);
-    }
     await doSaveNow();
-    await ensureRealtimeSubscribed(siteCode, dayDate);
   };
 
   // -----------------------------------------------------
@@ -636,7 +682,7 @@ export const useDriveStore = create((set, get) => {
       const upper = normalizeName(name);
       set((s) => {
         const coordosList = (s.coordosList || []).filter((x) => x !== upper);
-        const coordinator = s.coordinator === upper ? "" : s.coordinator;
+        const coordinator = normalizeName(s.coordinator) === upper ? "" : s.coordinator;
         return { ...s, coordosList, coordinator };
       });
       scheduleSave();
@@ -644,7 +690,8 @@ export const useDriveStore = create((set, get) => {
 
     // ---------- config journée
     setCoordinator: (coordinator) => {
-      set((s) => ({ ...s, coordinator }));
+      const c = normalizeName(coordinator);
+      set((s) => ({ ...s, coordinator: c }));
       scheduleSave();
     },
 
@@ -672,13 +719,7 @@ export const useDriveStore = create((set, get) => {
 
         assignments[bid] = copy;
 
-        return {
-          ...s,
-          dayStaff,
-          pauseWaveSize,
-          assignments,
-          currentBlockId: bid,
-        };
+        return { ...s, dayStaff, pauseWaveSize, assignments, currentBlockId: bid };
       });
 
       scheduleSave();
@@ -958,13 +999,7 @@ export const useDriveStore = create((set, get) => {
         const currentIndex = blocks.findIndex((b) => b.id === curId);
         const nextObj = currentIndex >= 0 ? blocks[currentIndex + 1] : null;
         if (!nextObj) {
-          return {
-            ...s,
-            currentBlockId: curId,
-            blockStartedAt: Date.now(),
-            rotationImminent: false,
-            rotationLocked: false,
-          };
+          return { ...s, currentBlockId: curId, blockStartedAt: Date.now(), rotationImminent: false, rotationLocked: false };
         }
 
         const nextBlockId = nextObj.id;
