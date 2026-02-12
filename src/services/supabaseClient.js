@@ -10,5 +10,9 @@ if (!url || !anon) {
 }
 
 export const supabase = createClient(url, anon, {
-  auth: { persistSession: false }, // mode test (pas d'auth)
+  auth: {
+    persistSession: true,     // ✅ PRO: garde la session
+    autoRefreshToken: true,   // ✅ PRO: refresh auto
+    detectSessionInUrl: true,
+  },
 });
