@@ -1,10 +1,9 @@
 // src/App.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "./services/supabaseClient";
-import { getPairedSiteCode } from "./services/deviceApi";
-import PairDevice from "./pages/PairDevice";
 import PinLogin from "./pages/PinLogin";
-import Setup from "./pages/Setup";
+
+import Setup from "./components/Setup.jsx";
 import Cockpit from "./components/Cockpit";
 import { useDriveStore } from "./store/useDriveStore";
 
@@ -14,40 +13,28 @@ export default function App() {
 
   const ensureSessionLoaded = useDriveStore((s) => s.ensureSessionLoaded);
   const siteCode = useDriveStore((s) => s.siteCode);
-  const setSiteCode = useDriveStore((s) => s.setSiteCode);
   const dayDate = useDriveStore((s) => s.dayDate);
 
-  const [phase, setPhase] = useState("boot"); // boot | need_pairing | need_login | ready
+  const [phase, setPhase] = useState("boot"); // boot | need_login | ready
   const [session, setSession] = useState(null);
 
+  // Tick cockpit (1s)
   useEffect(() => {
     const id = setInterval(() => tick(), 1000);
     return () => clearInterval(id);
   }, [tick]);
 
+  // Boot: session auth
   useEffect(() => {
     (async () => {
-      try {
-        const paired = await getPairedSiteCode();
-        if (!paired) return setPhase("need_pairing");
-
-        if (paired && String(siteCode || "").toUpperCase() !== paired) {
-          setSiteCode(paired);
-        }
-
-        const { data } = await supabase.auth.getSession();
-        const s = data?.session || null;
-        setSession(s);
-
-        if (!s) return setPhase("need_login");
-        setPhase("ready");
-      } catch {
-        setPhase("need_pairing");
-      }
+      const { data } = await supabase.auth.getSession();
+      const s = data?.session || null;
+      setSession(s);
+      setPhase(s ? "ready" : "need_login");
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auth listener
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s || null);
@@ -56,6 +43,7 @@ export default function App() {
     return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
+  // Hydrate session site+date quand prêt
   const canHydrate = useMemo(
     () => phase === "ready" && !!session && !!siteCode && !!dayDate,
     [phase, session, siteCode, dayDate]
@@ -65,12 +53,6 @@ export default function App() {
     if (!canHydrate) return;
     ensureSessionLoaded?.();
   }, [canHydrate, ensureSessionLoaded]);
-
-  const logout = async () => {
-    await supabase.auth.signOut();
-    setSession(null);
-    setPhase("need_login");
-  };
 
   if (phase === "boot") {
     return (
@@ -83,40 +65,10 @@ export default function App() {
     );
   }
 
-  if (phase === "need_pairing") {
-    return (
-      <PairDevice
-        defaultSite="MELUN"
-        onPaired={(sc) => {
-          setSiteCode(sc);
-          setPhase("need_login");
-        }}
-      />
-    );
-  }
-
   if (phase === "need_login") {
-    return (
-      <PinLogin
-        onNeedPairing={() => setPhase("need_pairing")}
-        onLogged={() => setPhase("ready")}
-      />
-    );
+    return <PinLogin onLogged={() => setPhase("ready")} />;
   }
 
-  // ✅ App normal + header logout
-  return (
-    <div className="page">
-      <div className="card" style={{ marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div className="muted">
-          Connecté : <b>{session?.user?.email || "—"}</b> — Site : <b>{siteCode}</b>
-        </div>
-        <button className="btn ghost" onClick={logout} title="Se déconnecter">
-          🚪 Déconnexion
-        </button>
-      </div>
-
-      {screen === "cockpit" ? <Cockpit /> : <Setup />}
-    </div>
-  );
+  return screen === "cockpit" ? <Cockpit /> : <Setup />;
 }
+

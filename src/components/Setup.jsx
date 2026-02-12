@@ -2,11 +2,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { getFirstBlockId } from "../utils/blocks";
-import { supabase } from "../services/supabaseClient"; // ✅ AJOUT
+import { supabase } from "../services/supabaseClient";
 
 export default function Setup() {
   const {
-    // API
     siteCode,
     setSiteCode,
     apiStatus,
@@ -55,7 +54,9 @@ export default function Setup() {
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
-  // ✅ charge la session dès l’arrivée sur Setup (site+date)
+  const norm = (s) => String(s || "").trim().toUpperCase();
+
+  // ✅ charge la session dès l’arrivée sur Setup
   useEffect(() => {
     ensureSessionLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -68,11 +69,15 @@ export default function Setup() {
     [horaires, rotationMinutes]
   );
 
-  const effectiveBlockId = isServiceRunning ? String(currentBlockId ?? "") : setupBlockId;
+  // ✅ FIX: éviter effectiveBlockId = "" (assignments[""])
+  const effectiveBlockId = useMemo(() => {
+    if (!isServiceRunning) return setupBlockId;
+    const id = String(currentBlockId ?? "").trim();
+    return id ? id : setupBlockId;
+  }, [isServiceRunning, currentBlockId, setupBlockId]);
+
   const blockAssignments = assignments?.[effectiveBlockId] || {};
   const selectedStaff = useMemo(() => (dayStaff || []).slice().sort(), [dayStaff]);
-
-  const norm = (s) => String(s || "").trim().toUpperCase();
 
   const hasCoordinator = norm(coordinator) !== "";
   const hasStaff = (dayStaff || []).length > 0;
@@ -104,11 +109,11 @@ export default function Setup() {
     [dayStaff]
   );
 
-  // ✅ AJOUT : Déconnexion
+  const canSync = norm(siteCode) !== "" && String(dayDate || "").trim() !== "";
+
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
-      // App.jsx écoutera onAuthStateChange et reviendra sur l’écran login automatiquement
     } catch (e) {
       console.error(e);
     }
@@ -127,16 +132,12 @@ export default function Setup() {
             )}
           </div>
 
-          {/* Site + date + sync */}
-          <div
-            className="setupRight"
-            style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}
-          >
+          <div className="setupRight" style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
             <div>
               <label className="muted small">Site code</label>
               <input
                 value={siteCode || ""}
-                onChange={(e) => setSiteCode(e.target.value)}
+                onChange={(e) => setSiteCode(norm(e.target.value))} // ✅ FIX: normalise
                 placeholder="MELUN"
               />
             </div>
@@ -153,7 +154,8 @@ export default function Setup() {
             <button
               className="btn ghost"
               onClick={hydrateFromApi}
-              title="Sync (remote écrase local, sauf remote vide)"
+              disabled={!canSync}
+              title={!canSync ? "Renseigne Site code + Date" : "Sync (remote écrase local, sauf remote vide)"}
             >
               🔄 Synchronisation
             </button>
@@ -161,17 +163,13 @@ export default function Setup() {
             <button
               className="btn ghost"
               onClick={pushToApi}
-              title="Sauvegarde (local -> remote)"
+              disabled={!canSync}
+              title={!canSync ? "Renseigne Site code + Date" : "Sauvegarde (local -> remote)"}
             >
               💾 Push
             </button>
 
-            {/* ✅ AJOUT : bouton déconnexion */}
-            <button
-              className="btn ghost"
-              onClick={handleLogout}
-              title="Se déconnecter"
-            >
+            <button className="btn ghost" onClick={handleLogout} title="Se déconnecter">
               🚪 Déconnexion
             </button>
 
@@ -214,14 +212,9 @@ export default function Setup() {
               <div className="row">
                 <select value={coordinator} onChange={(e) => setCoordinator(e.target.value)}>
                   <option value="">-- Choisir le coordinateur --</option>
-                  {coordosList
-                    .slice()
-                    .sort()
-                    .map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
+                  {coordosList.slice().sort().map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
                 </select>
               </div>
 
@@ -231,29 +224,20 @@ export default function Setup() {
                   onChange={(e) => setNewCoordo(e.target.value)}
                   placeholder="Ajouter coordinateur (ex: AMINE)"
                 />
-                <button className="btn" onClick={addCoordo}>
-                  + Ajouter
-                </button>
+                <button className="btn" onClick={addCoordo}>+ Ajouter</button>
               </div>
 
               <div className="listGrid" style={{ marginTop: 10 }}>
-                {coordosList
-                  .slice()
-                  .sort()
-                  .map((c) => (
-                    <div key={c} className="listItem">
-                      <div className="checkRow">
-                        <span className="name">{c}</span>
-                      </div>
-                      <button
-                        className="btn ghost mini"
-                        onClick={() => removeCoordoFromList(c)}
-                        title="Supprimer"
-                      >
-                        ✕
-                      </button>
+                {coordosList.slice().sort().map((c) => (
+                  <div key={c} className="listItem">
+                    <div className="checkRow">
+                      <span className="name">{c}</span>
                     </div>
-                  ))}
+                    <button className="btn ghost mini" onClick={() => removeCoordoFromList(c)} title="Supprimer">
+                      ✕
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -261,32 +245,21 @@ export default function Setup() {
               <h2>👥 Préparateurs présents</h2>
 
               <div className="listGrid">
-                {preparateursList
-                  .slice()
-                  .sort()
-                  .map((p) => {
-                    const checked = dayStaff.includes(p);
-                    return (
-                      <div key={p} className={`listItem ${checked ? "checked" : ""}`}>
-                        <label className="checkRow">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleDayStaff(p)}
-                          />
-                          <span className="name">{p}</span>
-                        </label>
+                {preparateursList.slice().sort().map((p) => {
+                  const checked = dayStaff.includes(p);
+                  return (
+                    <div key={p} className={`listItem ${checked ? "checked" : ""}`}>
+                      <label className="checkRow">
+                        <input type="checkbox" checked={checked} onChange={() => toggleDayStaff(p)} />
+                        <span className="name">{p}</span>
+                      </label>
 
-                        <button
-                          className="btn ghost mini"
-                          onClick={() => removePreparateurFromList(p)}
-                          title="Supprimer"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    );
-                  })}
+                      <button className="btn ghost mini" onClick={() => removePreparateurFromList(p)} title="Supprimer">
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="row">
@@ -295,9 +268,7 @@ export default function Setup() {
                   onChange={(e) => setNewPrep(e.target.value)}
                   placeholder="Ajouter préparateur (ex: SARAH)"
                 />
-                <button className="btn" onClick={addPrep}>
-                  + Ajouter
-                </button>
+                <button className="btn" onClick={addPrep}>+ Ajouter</button>
               </div>
             </div>
 
@@ -306,32 +277,19 @@ export default function Setup() {
               <p className="muted">Définit le nombre max envoyés en pause en même temps.</p>
 
               <div className="row">
-                <span className="muted" style={{ minWidth: 130 }}>
-                  Taille de vague
-                </span>
-                <select
-                  value={pauseWaveSize || 1}
-                  onChange={(e) => setPauseWaveSize(Number(e.target.value))}
-                >
+                <span className="muted" style={{ minWidth: 130 }}>Taille de vague</span>
+                <select value={pauseWaveSize || 1} onChange={(e) => setPauseWaveSize(Number(e.target.value))}>
                   {Array.from({ length: waveMax }, (_, i) => i + 1).map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
+                    <option key={v} value={v}>{v}</option>
                   ))}
                 </select>
               </div>
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={resetDay}>
-                🧹 Reset journée
-              </button>
+              <button className="btn ghost" onClick={resetDay}>🧹 Reset journée</button>
               <div style={{ flex: 1 }} />
-              <button
-                className="btn primary"
-                disabled={!canGoStep2}
-                onClick={() => setSetupStep(2)}
-              >
+              <button className="btn primary" disabled={!canGoStep2} onClick={() => setSetupStep(2)}>
                 ➡️ Suivant : Placement initial
               </button>
             </div>
@@ -360,9 +318,7 @@ export default function Setup() {
                       >
                         <option value="">-- Choisir poste --</option>
                         {postes.map((p) => (
-                          <option key={p} value={p}>
-                            {p}
-                          </option>
+                          <option key={p} value={p}>{p}</option>
                         ))}
                       </select>
                     </div>
@@ -378,9 +334,7 @@ export default function Setup() {
             </div>
 
             <div className="row">
-              <button className="btn ghost" onClick={() => setSetupStep(1)}>
-                ⬅️ Retour
-              </button>
+              <button className="btn ghost" onClick={() => setSetupStep(1)}>⬅️ Retour</button>
               <div style={{ flex: 1 }} />
               {!isServiceRunning && (
                 <button className="btn primary" disabled={!canStart} onClick={startService}>

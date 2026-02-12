@@ -1,40 +1,29 @@
 // src/pages/PinLogin.jsx
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { supabase } from "../services/supabaseClient";
-import { getPairedSiteCode } from "../services/deviceApi";
+import { useDriveStore } from "../store/useDriveStore";
 
-export default function PinLogin({ onLogged, onNeedPairing }) {
-  const [siteCode, setSiteCode] = useState(null);
+export default function PinLogin({ onLogged }) {
+  const setSiteCode = useDriveStore((s) => s.setSiteCode);
+
+  const [site, setSite] = useState("MELUN");
   const [code, setCode] = useState("");
   const [pin, setPin] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const sc = await getPairedSiteCode();
-        if (!sc) return onNeedPairing?.();
-        setSiteCode(sc);
-      } catch (e) {
-        setErr(String(e?.message || e));
-      }
-    })();
-  }, [onNeedPairing]);
-
   const login = async () => {
     setErr(null);
     setLoading(true);
     try {
-      const sc = String(siteCode || "").trim().toUpperCase();
+      const sc = String(site || "").trim().toUpperCase();
       const c = String(code || "").trim().toUpperCase();
       const p = String(pin || "").trim();
 
-      if (!sc) throw new Error("Appareil non lié à un site.");
+      if (!sc) throw new Error("Site requis.");
       if (!c) throw new Error("Code requis.");
       if (!p) throw new Error("PIN requis.");
 
-      // email “virtuel” : SITE__CODE@driveops.local
       const email = `${sc}__${c}@driveops.local`;
 
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -42,12 +31,12 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
         password: p,
       });
 
-      // ✅ amélioration #1: erreur “vraie”
-      if (error) {
-        throw new Error(error.message || "Connexion impossible.");
-      }
+      if (error) throw new Error("Identifiants incorrects.");
 
-      onLogged?.(data?.session);
+      // ✅ stocke le site dans le store
+      await setSiteCode(sc);
+
+      onLogged?.(data.session);
     } catch (e) {
       setErr(String(e?.message || e));
     } finally {
@@ -59,18 +48,22 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
     <div className="page">
       <div className="card">
         <h1>🔐 Connexion</h1>
-        <div className="muted">
-          Site: <b>{siteCode || "—"}</b>
-        </div>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+          <input
+            value={site}
+            onChange={(e) => setSite(e.target.value)}
+            placeholder="SITE (ex: MELUN)"
+            style={{ minWidth: 200 }}
+          />
+
           <input
             value={code}
             onChange={(e) => setCode(e.target.value)}
             placeholder="CODE (ex: BAMBA)"
             style={{ minWidth: 220 }}
-            autoComplete="username"
           />
+
           <input
             value={pin}
             onChange={(e) => setPin(e.target.value)}
@@ -78,15 +71,10 @@ export default function PinLogin({ onLogged, onNeedPairing }) {
             type="password"
             inputMode="numeric"
             style={{ minWidth: 180 }}
-            autoComplete="current-password"
           />
+
           <button className="btn primary" disabled={loading} onClick={login}>
             {loading ? "..." : "➡️ Entrer"}
-          </button>
-
-          {/* ✅ amélioration #2: re-pair */}
-          <button className="btn ghost" disabled={loading} onClick={onNeedPairing}>
-            🔧 Re-pair
           </button>
         </div>
 
