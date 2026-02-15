@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "./services/supabaseClient";
 import { useDriveStore } from "./store/useDriveStore";
 
@@ -7,6 +7,24 @@ import Setup from "./components/Setup";
 import Cockpit from "./components/Cockpit";
 import PinLogin from "./pages/PinLogin";
 import Admin from "./pages/Admin";
+
+// ------------------------
+// Hash routing (stable sur Vercel sans rewrite)
+//   #/          -> setup
+//   #/cockpit   -> cockpit
+//   #/admin     -> admin
+function hashToScreen(hash) {
+  const h = String(hash || "").trim();
+  if (h.startsWith("#/admin")) return "admin";
+  if (h.startsWith("#/cockpit")) return "cockpit";
+  return "setup";
+}
+
+function screenToHash(screen) {
+  if (screen === "admin") return "#/admin";
+  if (screen === "cockpit") return "#/cockpit";
+  return "#/";
+}
 
 export default function App() {
   const screen = useDriveStore((s) => s.screen);
@@ -30,29 +48,33 @@ export default function App() {
 
   const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
 
-  async function refreshMemberRole(sess, site) {
-    if (!sess?.user?.id || !site) {
-      setMemberRole?.(null);
-      return;
-    }
+  const refreshMemberRole = useCallback(
+    async (sess, site) => {
+      if (!sess?.user?.id || !site) {
+        setMemberRole?.(null);
+        return;
+      }
 
-    const { data, error } = await supabase
-      .from("drive_site_members")
-      .select("role")
-      .eq("site_code", site) // ✅ lowercase
-      .eq("user_id", sess.user.id)
-      .maybeSingle();
+      const { data, error } = await supabase
+        .from("drive_site_members")
+        .select("role")
+        .eq("site_code", site) // ✅ lowercase
+        .eq("user_id", sess.user.id)
+        .maybeSingle();
 
-    if (error) {
-      console.error("[refreshMemberRole]", error);
-      setMemberRole?.(null);
-      return;
-    }
+      if (error) {
+        console.error("[refreshMemberRole]", error);
+        setMemberRole?.(null);
+        return;
+      }
 
-    setMemberRole?.(data?.role || null);
-  }
+      setMemberRole?.(data?.role || null);
+    },
+    [setMemberRole]
+  );
 
-  // Boot session + listener
+  // ------------------------
+  // 1) Boot session + listener auth
   useEffect(() => {
     let sub;
 
@@ -61,20 +83,55 @@ export default function App() {
       setSession(data.session || null);
       setBooting(false);
 
-      sub = supabase.auth.onAuthStateChange((_event, newSession) => {
-        setSession(newSession || null);
+      sub = supabase.auth
+        .onAuthStateChange((_event, newSession) => {
+          setSession(newSession || null);
 
-        if (!newSession) {
-          resetAuthState?.();
-        }
-      }).data.subscription;
+          if (!newSession) {
+            resetAuthState?.();
+          }
+        })
+        .data.subscription;
     })();
 
     return () => sub?.unsubscribe?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Refresh role sur session/site
+  // ------------------------
+  // 2) Sync URL(hash) -> screen au chargement + back/forward
+  useEffect(() => {
+    if (booting) return;
+
+    const syncFromHash = () => {
+      const wanted = hashToScreen(window.location.hash);
+      if (wanted === "admin") goAdmin?.();
+      else if (wanted === "cockpit") goCockpit?.();
+      else goSetup?.();
+    };
+
+    // first sync
+    syncFromHash();
+
+    // listen changes (navigation + back/forward)
+    window.addEventListener("hashchange", syncFromHash);
+    return () => window.removeEventListener("hashchange", syncFromHash);
+  }, [booting, goAdmin, goCockpit, goSetup]);
+
+  // ------------------------
+  // 3) Sync screen -> URL(hash) (quand tu cliques sur les boutons)
+  useEffect(() => {
+    if (booting) return;
+    const targetHash = screenToHash(screen);
+    if (window.location.hash !== targetHash) {
+      // replaceState = évite de polluer l’historique si tu veux
+      // mais hash = OK aussi. Je mets assign via hash (simple + stable).
+      window.location.hash = targetHash;
+    }
+  }, [booting, screen]);
+
+  // ------------------------
+  // 4) Refresh role sur session/site
   useEffect(() => {
     if (booting) return;
 
@@ -92,9 +149,10 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booting, session?.user?.id, normalizedSite]);
+  }, [booting, session?.user?.id, normalizedSite, refreshMemberRole]);
 
+  // ------------------------
+  // 5) Garde-fous
   // Si connecté mais écran pin => setup
   useEffect(() => {
     if (booting) return;
@@ -113,6 +171,8 @@ export default function App() {
     if (screen === "admin" && !roleLoading && memberRole !== "admin") goSetup?.();
   }, [booting, screen, memberRole, roleLoading, goSetup]);
 
+  // ------------------------
+  // Render
   if (booting) return <div style={{ padding: 16 }}>Chargement…</div>;
 
   if (!session) return <PinLogin />;
@@ -126,6 +186,5 @@ export default function App() {
   if (screen === "admin") return <Admin />;
   if (screen === "cockpit") return <Cockpit />;
 
-  // default
   return <Setup adminState={adminState} />;
 }
