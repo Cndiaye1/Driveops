@@ -50,7 +50,6 @@ export default function Setup({ adminState } = {}) {
     serviceStartedAt,
     dayStartedAt,
 
-    // ✅ nouveaux champs du store (si présents)
     memberRole,
     resetAuthState,
   } = useDriveStore();
@@ -58,20 +57,20 @@ export default function Setup({ adminState } = {}) {
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
-  // ✅ input site: on évite d’appeler setSiteCode à chaque frappe
+  // ✅ input site: draft + commit
   const [siteDraft, setSiteDraft] = useState((siteCode || "").toUpperCase());
-
   useEffect(() => {
     setSiteDraft((siteCode || "").toUpperCase());
   }, [siteCode]);
 
   const adminLoading = !!adminState?.loading;
   const role = adminState?.role ?? memberRole ?? null;
-  const isAdmin = adminState?.isAdmin ?? (role === "admin");
+  const isAdmin = adminState?.isAdmin ?? (String(role || "").toLowerCase() === "admin");
 
   const normUpper = (s) => String(s || "").trim().toUpperCase();
   const normLower = (s) => String(s || "").trim().toLowerCase();
 
+  // ✅ Au montage : charge la session (remote) si besoin
   useEffect(() => {
     ensureSessionLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -118,16 +117,40 @@ export default function Setup({ adminState } = {}) {
     setNewCoordo("");
   }
 
-  const waveMax = useMemo(
-    () => Math.max(1, Math.min(dayStaff?.length || 1, 6)),
-    [dayStaff]
-  );
+  const waveMax = useMemo(() => Math.max(1, Math.min(dayStaff?.length || 1, 6)), [dayStaff]);
 
   async function commitSiteCode() {
     const next = normLower(siteDraft);
+    const cur = normLower(siteCode);
     if (!next) return;
-    // setSiteCode est async dans ton store (hydrate remote)
-    await setSiteCode(next);
+    if (next === cur) return;
+
+    try {
+      await setSiteCode(next); // async (hydrate remote)
+    } catch (e) {
+      console.error("[setSiteCode]", e);
+    }
+  }
+
+  // ✅ NAV helpers : important sur Vercel si tu es sur /admin (URL) mais app en screen-based
+  function pushUrl(pathname) {
+    try {
+      if (typeof window !== "undefined" && window.location.pathname !== pathname) {
+        window.history.pushState({}, "", pathname);
+      }
+    } catch {}
+  }
+
+  function goToAdmin() {
+    goAdmin?.();
+    // optionnel : URL /admin (sans reload)
+    pushUrl("/admin");
+  }
+
+  function goToCockpitSafe() {
+    goCockpit?.();
+    // cockpit/setup sont sur la racine dans ton app
+    pushUrl("/");
   }
 
   async function handleLogout() {
@@ -136,8 +159,11 @@ export default function Setup({ adminState } = {}) {
     } catch (e) {
       console.error(e);
     } finally {
-      // bonus : remet l’app sur pin même si listener tarde
       resetAuthState?.();
+      // on revient proprement sur /
+      try {
+        window.location.assign("/");
+      } catch {}
     }
   }
 
@@ -188,13 +214,14 @@ export default function Setup({ adminState } = {}) {
                 🛠 Admin…
               </button>
             ) : isAdmin ? (
-              <button className="btn ghost" onClick={goAdmin} title="Aller sur la page Admin">
+              <button className="btn ghost" onClick={goToAdmin} title="Aller sur la page Admin">
                 🛠 Admin
               </button>
             ) : null}
 
+            {/* ✅ cockpit visible si service en cours */}
             {isServiceRunning && (
-              <button className="btn ghost" onClick={goCockpit} title="Retour cockpit">
+              <button className="btn ghost" onClick={goToCockpitSafe} title="Retour cockpit">
                 🧭 Cockpit
               </button>
             )}

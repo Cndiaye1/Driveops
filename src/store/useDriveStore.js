@@ -126,52 +126,68 @@ function prettifyApiError(msgRaw) {
   return msg;
 }
 
+/**
+ * ✅ IMPORTANT
+ * On n’envoie plus dans Supabase les champs UI (screen/setupStep/wall/print),
+ * sinon un device peut “forcer” les autres à revenir sur Admin/Cockpit etc.
+ */
+const REMOTE_ALLOWED_KEYS = [
+  // référentiels & règles
+  "preparateursList",
+  "coordosList",
+  "postes",
+  "horaires",
+  "rotationMinutes",
+  "rotationWarnMinutes",
+  "pauseAfterMinutes",
+  "pauseDurationMinutes",
+  "pauseWaveSize",
+  "syncBlocksToSystemClock",
+
+  // config journée
+  "dayDate",
+  "coordinator",
+  "dayStaff",
+
+  // runtime service
+  "dayStartedAt",
+  "blockStartedAt",
+  "serviceStartedAt",
+  "currentBlockId",
+  "rotationImminent",
+  "rotationLocked",
+
+  // data métier
+  "assignments",
+  "pauseTakenAt",
+  "skipRotation",
+  "pausePrevPoste",
+  "returnAlertUntil",
+];
+
 function serializeState(s) {
-  // ✅ on enregistre UNIQUEMENT les données métier
-  return {
-    siteCode: s.siteCode,
-    dayDate: s.dayDate,
+  // ✅ on enregistre UNIQUEMENT les données métier (pas l’UI)
+  const out = {};
+  for (const k of REMOTE_ALLOWED_KEYS) out[k] = s[k];
+  return out;
+}
 
-    screen: s.screen,
-    setupStep: s.setupStep,
-    wallMode: s.wallMode,
-    printMode: s.printMode,
+function pickRemote(remoteJson) {
+  if (!remoteJson || typeof remoteJson !== "object") return null;
+  if (isEmptyObject(remoteJson)) return null;
 
-    preparateursList: s.preparateursList,
-    coordosList: s.coordosList,
-    postes: s.postes,
-    horaires: s.horaires,
-
-    rotationMinutes: s.rotationMinutes,
-    rotationWarnMinutes: s.rotationWarnMinutes,
-    pauseAfterMinutes: s.pauseAfterMinutes,
-    pauseDurationMinutes: s.pauseDurationMinutes,
-    pauseWaveSize: s.pauseWaveSize,
-    syncBlocksToSystemClock: s.syncBlocksToSystemClock,
-
-    coordinator: s.coordinator,
-    dayStaff: s.dayStaff,
-
-    dayStartedAt: s.dayStartedAt,
-    blockStartedAt: s.blockStartedAt,
-    serviceStartedAt: s.serviceStartedAt,
-    currentBlockId: s.currentBlockId,
-    rotationImminent: s.rotationImminent,
-    rotationLocked: s.rotationLocked,
-
-    assignments: s.assignments,
-    pauseTakenAt: s.pauseTakenAt,
-    skipRotation: s.skipRotation,
-    pausePrevPoste: s.pausePrevPoste,
-    returnAlertUntil: s.returnAlertUntil,
-  };
+  const out = {};
+  for (const k of REMOTE_ALLOWED_KEYS) {
+    if (remoteJson[k] !== undefined) out[k] = remoteJson[k];
+  }
+  return out;
 }
 
 function mergeRemoteIntoState(defaults, remoteJson) {
-  if (!remoteJson || typeof remoteJson !== "object") return defaults;
-  if (isEmptyObject(remoteJson)) return defaults;
+  const safeRemote = pickRemote(remoteJson);
+  if (!safeRemote) return defaults;
 
-  const horaires = remoteJson.horaires || defaults.horaires;
+  const horaires = safeRemote.horaires || defaults.horaires;
 
   const migrateMapByBlock = (obj) => {
     const src = obj || {};
@@ -185,7 +201,7 @@ function mergeRemoteIntoState(defaults, remoteJson) {
 
   const merged = {
     ...defaults,
-    ...remoteJson,
+    ...safeRemote,
   };
 
   merged.horaires = horaires;
@@ -209,17 +225,15 @@ const DEFAULT_SITE_CODE = String(import.meta.env.VITE_SITE_CODE || "melun").trim
 const defaultState = {
   siteCode: DEFAULT_SITE_CODE,
 
+  // UI only (local)
   screen: "setup", // setup | cockpit | admin
   setupStep: 1,
-
   wallMode: false,
   printMode: false,
 
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
-
   postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
-
   horaires: [
     "06:00",
     "07:00",
@@ -279,7 +293,7 @@ const defaultState = {
 
   _hasHydrated: false,
 
-  // ✅ Auth / RBAC (pour afficher Admin)
+  // ✅ Auth / RBAC (local, pas besoin remote)
   memberRole: null, // admin|manager|user|null
 };
 
@@ -474,6 +488,7 @@ export const useDriveStore = create(
               if (now - (st2._lastLocalWriteAt || 0) < 700) return;
               if (isEmptyObject(row.state_json)) return;
 
+              // ✅ merge SAFE only (ignore screen/wall/print/admin, etc)
               const next = mergeRemoteIntoState(st2, row.state_json);
               set({
                 ...next,
@@ -518,6 +533,7 @@ export const useDriveStore = create(
 
             await doSaveNow();
           } else {
+            // ✅ merge SAFE only
             const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
 
             if (!merged.currentBlockId || merged.currentBlockId === "0") {
@@ -574,7 +590,7 @@ export const useDriveStore = create(
           await hydrateFromRemote(s.siteCode, s.dayDate);
         },
 
-        // ---------- navigation
+        // ---------- navigation (LOCAL only)
         goSetup: () => set((s) => ({ ...s, screen: "setup" })),
         goCockpit: () => set((s) => ({ ...s, screen: "cockpit" })),
         goAdmin: () => set((s) => ({ ...s, screen: "admin" })),
@@ -600,9 +616,10 @@ export const useDriveStore = create(
           await hydrateFromRemote(get().siteCode, d);
         },
 
-        // ---------- modes UI
+        // ---------- modes UI (LOCAL)
         setWallMode: (wallMode) => {
           set((s) => ({ ...s, wallMode: !!wallMode }));
+          // wallMode n’est plus “remote”, mais on peut garder l’auto-save pour le local persist
           scheduleSave();
         },
         enterPrintMode: () => set((s) => ({ ...s, printMode: true })),
@@ -1199,6 +1216,7 @@ export const useDriveStore = create(
         }
       },
 
+      // ✅ local persist: ok de garder l’UI ici
       partialize: (s) => ({
         siteCode: s.siteCode,
         dayDate: s.dayDate,
@@ -1240,7 +1258,6 @@ export const useDriveStore = create(
         apiStatus: s.apiStatus,
         apiError: s.apiError,
 
-        // ✅ on persiste le rôle (pratique)
         memberRole: s.memberRole,
       }),
     }
