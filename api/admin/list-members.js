@@ -1,5 +1,5 @@
-// api/admin/list-members.js  (ESM compatible Vercel + "type":"module")
-import { createClient } from "@supabase/supabase-js";
+// api/admin/list-members.js
+const { createClient } = require("@supabase/supabase-js");
 
 function sendJson(res, status, payload) {
   res.statusCode = status;
@@ -14,7 +14,6 @@ function getBearer(req) {
 }
 
 function getQuery(req, key) {
-  // Vercel fournit souvent req.query, mais on ajoute un fallback robuste
   if (req.query && req.query[key] != null) return req.query[key];
   try {
     const u = new URL(req.url, "http://localhost");
@@ -24,7 +23,7 @@ function getQuery(req, key) {
   }
 }
 
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   try {
     if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
 
@@ -49,7 +48,6 @@ export default async function handler(req, res) {
     const siteCode = String(getQuery(req, "siteCode") || "").trim().toLowerCase();
     if (!siteCode) return sendJson(res, 400, { error: "siteCode required" });
 
-    // check caller is admin for this site
     const { data: member, error: mErr } = await admin
       .from("drive_site_members")
       .select("role")
@@ -68,7 +66,6 @@ export default async function handler(req, res) {
 
     if (error) return sendJson(res, 500, { error: error.message });
 
-    // join profiles (optional)
     const ids = (rows || []).map((r) => r.user_id).filter(Boolean);
     let profilesById = {};
     if (ids.length) {
@@ -88,4 +85,4 @@ export default async function handler(req, res) {
   } catch (e) {
     return sendJson(res, 500, { error: e?.message || String(e) });
   }
-}
+};
