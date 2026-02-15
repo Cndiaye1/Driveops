@@ -8,31 +8,28 @@ function shortUuid(u) {
   return `${u.slice(0, 8)}…${u.slice(-6)}`;
 }
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, ""); // ex: http://localhost:3000
+function getApiBase() {
+  const raw = String(import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
+  if (!raw) return ""; // same origin
 
-async function getAccessTokenOrThrow() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw new Error(error.message);
-  const token = data?.session?.access_token;
-  if (!token) throw new Error("Session invalide. Reconnecte-toi.");
-  return token;
-}
-
-async function safeJson(res) {
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return res.json();
-  const txt = await res.text().catch(() => "");
-  return { error: txt || `HTTP ${res.status}` };
+  // ✅ si on est en prod et que l'env pointe vers localhost -> on ignore
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname || "";
+    if (host && host !== "localhost" && raw.includes("localhost")) return "";
+  }
+  return raw;
 }
 
 export default function Admin() {
   const siteCode = useDriveStore((s) => s.siteCode);
   const memberRole = useDriveStore((s) => s.memberRole);
-
   const goSetup = useDriveStore((s) => s.goSetup);
 
   const isAdmin = memberRole === "admin";
   const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
+
+  const API_BASE = useMemo(() => getApiBase(), []);
+  const apiUrl = (path) => (API_BASE ? `${API_BASE}${path}` : path);
 
   const [form, setForm] = useState({ code: "", pin: "", role: "user", fullName: "" });
   const [loading, setLoading] = useState(false);
@@ -43,11 +40,15 @@ export default function Admin() {
   const [q, setQ] = useState("");
 
   async function logout() {
-    try {
-      await supabase.auth.signOut();
-    } catch (e) {
-      console.error(e);
-    }
+    await supabase.auth.signOut();
+  }
+
+  async function getToken() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw new Error(error.message);
+    const token = data?.session?.access_token;
+    if (!token) throw new Error("Session invalide. Reconnecte-toi.");
+    return token;
   }
 
   async function loadMembers() {
@@ -56,21 +57,23 @@ export default function Admin() {
     setMsg(null);
 
     try {
-      const token = await getAccessTokenOrThrow();
-      const url = `${API_BASE}/api/admin/list-members?siteCode=${encodeURIComponent(normalizedSite)}`;
+      if (!isAdmin) {
+        setMembers([]);
+        return;
+      }
 
-      const r = await fetch(url, {
-        method: "GET",
+      const token = await getToken();
+      const r = await fetch(apiUrl(`/api/admin/list-members?siteCode=${encodeURIComponent(normalizedSite)}`), {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      const j = await safeJson(r);
-      if (!r.ok) throw new Error(j?.error || "Erreur API list-members");
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `Erreur list-members (${r.status})`);
 
       setMembers(j?.members || []);
     } catch (e) {
-      setMsg({ type: "error", text: e?.message || "Erreur" });
       setMembers([]);
+      setMsg({ type: "error", text: e?.message || "Erreur" });
     } finally {
       setMembersLoading(false);
     }
@@ -79,12 +82,11 @@ export default function Admin() {
   useEffect(() => {
     loadMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [normalizedSite]);
+  }, [normalizedSite, isAdmin]);
 
   const filtered = useMemo(() => {
     const s = (q || "").trim().toLowerCase();
     if (!s) return members;
-
     return (members || []).filter((m) => {
       const code = (m.member_code || "").toLowerCase();
       const role = (m.role || "").toLowerCase();
@@ -107,27 +109,21 @@ export default function Admin() {
 
     if (!code || !pin) return setMsg({ type: "error", text: "CODE et PIN obligatoires." });
     if (!["admin", "manager", "user"].includes(role)) return setMsg({ type: "error", text: "Rôle invalide." });
-    if (pin.length < 4) return setMsg({ type: "error", text: "PIN trop court (min 4)." });
 
     setLoading(true);
     try {
-      const token = await getAccessTokenOrThrow();
-      const url = `${API_BASE}/api/admin/create-user`;
+      const token = await getToken();
 
-      const r = await fetch(url, {
+      const r = await fetch(apiUrl(`/api/admin/create-user`), {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ siteCode: normalizedSite, code, pin, role, fullName }),
       });
 
-      const j = await safeJson(r);
-      if (!r.ok) throw new Error(j?.error || "Erreur API create-user");
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `Erreur create-user (${r.status})`);
 
-      setMsg({
-        type: "success",
-        text: `${j.created ? "Créé" : "Mis à jour"} : ${j.member_code} (${j.role})`,
-      });
-
+      setMsg({ type: "success", text: `${j.created ? "Créé" : "Mis à jour"} : ${j.member_code} (${j.role})` });
       setForm({ code: "", pin: "", role: "user", fullName: "" });
       await loadMembers();
     } catch (err) {
@@ -138,18 +134,16 @@ export default function Admin() {
   }
 
   return (
-    <div style={{ padding: 16, maxWidth: 860, margin: "0 auto" }}>
+    <div style={{ padding: 16, maxWidth: 760, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <h2 style={{ margin: 0 }}>Admin</h2>
           <div style={{ opacity: 0.8, marginTop: 4 }}>
             Site: <b>{normalizedSite || "—"}</b> · Ton rôle: <b>{memberRole || "—"}</b>
           </div>
-          {!!API_BASE && (
-            <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
-              API: <span>{API_BASE}</span>
-            </div>
-          )}
+          <div style={{ opacity: 0.6, marginTop: 2, fontSize: 12 }}>
+            API base: <b>{API_BASE || "(same origin)"}</b>
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
@@ -241,9 +235,9 @@ export default function Admin() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Recherche (code / rôle / nom)…"
-              style={{ minWidth: 240 }}
+              style={{ minWidth: 220 }}
             />
-            <button type="button" onClick={loadMembers} disabled={membersLoading}>
+            <button onClick={loadMembers} disabled={membersLoading}>
               {membersLoading ? "..." : "Rafraîchir"}
             </button>
           </div>
@@ -264,13 +258,12 @@ export default function Admin() {
             >
               <div>
                 <div style={{ fontWeight: 800 }}>
-                  {m.member_code ? m.member_code : shortUuid(m.user_id)}{" "}
-                  {m.full_name ? <span style={{ opacity: 0.8, fontWeight: 600 }}>· {m.full_name}</span> : null}
+                  {m.member_code ? m.member_code : shortUuid(m.user_id)}
+                  {m.full_name ? <span style={{ fontWeight: 500, opacity: 0.8 }}> · {m.full_name}</span> : null}
                 </div>
                 <div style={{ opacity: 0.75, fontSize: 12 }}>
                   {m.created_at ? new Date(m.created_at).toLocaleString() : "—"}
                 </div>
-                {m.email ? <div style={{ opacity: 0.7, fontSize: 12 }}>{m.email}</div> : null}
               </div>
 
               <div style={{ fontWeight: 800 }}>{m.role}</div>

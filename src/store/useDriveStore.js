@@ -21,10 +21,6 @@ function minutesToTime(min) {
   return `${pad2(h)}:${pad2(m)}`;
 }
 
-function normalizeSiteDb(siteCode) {
-  return String(siteCode || "").trim().toLowerCase();
-}
-
 // ✅ legacy index -> minutes id (ex: "8" => horaires[8]="14:00" => "840")
 function normalizeBlockId(blockId, horaires) {
   const raw = String(blockId ?? "");
@@ -106,15 +102,13 @@ function blockStartTimestamp(dayDate, blockStartMin, useSystemDate) {
 const TABLE = "drive_sessions";
 
 function sessionKey(siteCode, dayDate) {
-  // ✅ clé normalisée DB
-  return `${normalizeSiteDb(siteCode)}__${dayDate}`;
+  return `${siteCode}__${dayDate}`;
 }
 
 function isEmptyObject(x) {
   return !!x && typeof x === "object" && !Array.isArray(x) && Object.keys(x).length === 0;
 }
 
-// ✅ messages “vendables”
 function prettifyApiError(msgRaw) {
   const msg = String(msgRaw || "");
   const lower = msg.toLowerCase();
@@ -173,15 +167,9 @@ function serializeState(s) {
   };
 }
 
-/**
- * Merge remote -> local (remote gagne), garde-fous:
- * - remote null/undefined => defaults
- * - remote {} => defaults (anti wipe)
- * - migration des blockIds legacy
- */
 function mergeRemoteIntoState(defaults, remoteJson) {
   if (!remoteJson || typeof remoteJson !== "object") return defaults;
-  if (isEmptyObject(remoteJson)) return defaults; // ✅ anti wipe
+  if (isEmptyObject(remoteJson)) return defaults;
 
   const horaires = remoteJson.horaires || defaults.horaires;
 
@@ -215,15 +203,13 @@ function mergeRemoteIntoState(defaults, remoteJson) {
 
 // -----------------------------------------------------
 // Defaults
-const DEFAULT_SITE_CODE_UI = (import.meta.env.VITE_SITE_CODE || "MELUN").trim().toUpperCase();
+// ✅ IMPORTANT: site_code = lowercase (DB/RLS/API alignés)
+const DEFAULT_SITE_CODE = String(import.meta.env.VITE_SITE_CODE || "melun").trim().toLowerCase();
 
 const defaultState = {
-  siteCode: DEFAULT_SITE_CODE_UI, // UI (uppercase)
+  siteCode: DEFAULT_SITE_CODE,
 
-  // ✅ auth state (App.jsx)
-  memberRole: null, // "admin"|"manager"|"user"|null
-
-  screen: "setup", // setup | cockpit | admin | pin
+  screen: "setup", // setup | cockpit | admin
   setupStep: 1,
 
   wallMode: false,
@@ -292,6 +278,9 @@ const defaultState = {
   _retryCount: 0,
 
   _hasHydrated: false,
+
+  // ✅ Auth / RBAC (pour afficher Admin)
+  memberRole: null, // admin|manager|user|null
 };
 
 // -----------------------------------------------------
@@ -311,7 +300,6 @@ async function awaitHydrated() {
 export const useDriveStore = create(
   persist(
     (set, get) => {
-      // helpers maps
       const ensureBlockMaps = (s, bid) => {
         const assignments = { ...(s.assignments || {}) };
         const skipRotation = { ...(s.skipRotation || {}) };
@@ -329,12 +317,10 @@ export const useDriveStore = create(
 
       // Remote: load + upsert
       const loadSession = async (siteCode, dayDate) => {
-        const siteDb = normalizeSiteDb(siteCode);
-
         const { data, error } = await supabase
           .from(TABLE)
           .select("id, site_code, day_date, state_json, updated_at")
-          .eq("site_code", siteDb)
+          .eq("site_code", siteCode)
           .eq("day_date", dayDate)
           .maybeSingle();
 
@@ -343,10 +329,8 @@ export const useDriveStore = create(
       };
 
       const upsertSession = async (siteCode, dayDate, stateJson) => {
-        const siteDb = normalizeSiteDb(siteCode);
-
         const payload = {
-          site_code: siteDb,
+          site_code: siteCode,
           day_date: dayDate,
           state_json: stateJson,
           updated_at: new Date().toISOString(),
@@ -384,7 +368,6 @@ export const useDriveStore = create(
         const st = get();
         const key = sessionKey(st.siteCode, st.dayDate);
 
-        // ✅ Ne jamais écrire tant qu’on n’a pas hydrater la session site+date
         if (st._sessionLoadedKey !== key) {
           set({ apiStatus: "syncing", apiError: "" });
           await hydrateFromRemote(st.siteCode, st.dayDate);
@@ -448,7 +431,6 @@ export const useDriveStore = create(
         }, 350);
       };
 
-      // Auto retry on "online" event (une seule fois)
       if (typeof window !== "undefined" && !window.__driveopsOnlineListener) {
         window.__driveopsOnlineListener = true;
         window.addEventListener("online", () => {
@@ -463,9 +445,7 @@ export const useDriveStore = create(
       const ensureRealtimeSubscribed = async (siteCode, dayDate) => {
         await awaitHydrated();
 
-        const siteDb = normalizeSiteDb(siteCode);
-        const key = `${siteDb}__${dayDate}`;
-
+        const key = sessionKey(siteCode, dayDate);
         const st = get();
         if (st._subscribedKey === key) return;
 
@@ -482,18 +462,17 @@ export const useDriveStore = create(
               event: "*",
               schema: "public",
               table: TABLE,
-              filter: `site_code=eq.${siteDb}`,
+              filter: `site_code=eq.${siteCode}`,
             },
             async (payload) => {
               const row = payload?.new || payload?.old;
               if (!row) return;
-
               if (String(row.day_date) !== String(dayDate)) return;
-              if (isEmptyObject(row.state_json)) return;
 
               const now = Date.now();
               const st2 = get();
               if (now - (st2._lastLocalWriteAt || 0) < 700) return;
+              if (isEmptyObject(row.state_json)) return;
 
               const next = mergeRemoteIntoState(st2, row.state_json);
               set({
@@ -525,7 +504,6 @@ export const useDriveStore = create(
 
           if (!row || isEmptyObject(row.state_json)) {
             const base = { ...get(), siteCode, dayDate };
-
             if (!base.currentBlockId || base.currentBlockId === "0") {
               base.currentBlockId = getFirstBlockId(base.horaires, base.rotationMinutes);
             }
@@ -571,25 +549,25 @@ export const useDriveStore = create(
       return {
         ...defaultState,
 
-        // ✅ compat si un ancien écran l’utilise encore
-        setScreen: (screen) => set((s) => ({ ...s, screen })),
+        setHasHydrated: (v) => set({ _hasHydrated: !!v }),
 
-        // ✅ auth (App.jsx)
-        setMemberRole: (role) => set({ memberRole: role || null }),
+        // ✅ Auth / role
+        setMemberRole: (role) =>
+          set({
+            memberRole: role ? String(role).trim().toLowerCase() : null,
+          }),
+
         resetAuthState: () =>
           set((s) => ({
             ...s,
             memberRole: null,
-            screen: "pin",
+            screen: "setup",
             apiStatus: "idle",
             apiError: "",
             _sessionLoadedKey: null,
             _subscribedKey: null,
           })),
 
-        setHasHydrated: (v) => set({ _hasHydrated: !!v }),
-
-        // ✅ à appeler au démarrage (Setup/Cockpit)
         ensureSessionLoaded: async () => {
           await awaitHydrated();
           const s = get();
@@ -607,11 +585,11 @@ export const useDriveStore = create(
         setSiteCode: async (siteCode) => {
           await awaitHydrated();
 
-          const ui = String(siteCode || "").trim().toUpperCase();
-          if (!ui) return;
+          const v = String(siteCode || "").trim().toLowerCase();
+          if (!v) return;
 
-          set((s) => ({ ...s, siteCode: ui, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
-          await hydrateFromRemote(ui, get().dayDate);
+          set((s) => ({ ...s, siteCode: v, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+          await hydrateFromRemote(v, get().dayDate);
         },
 
         setDayDate: async (dayDate) => {
@@ -742,7 +720,6 @@ export const useDriveStore = create(
             const dayStaff = exists ? s.dayStaff.filter((x) => x !== upper) : [...s.dayStaff, upper].sort();
 
             const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
-
             const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
             const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
 
@@ -786,7 +763,6 @@ export const useDriveStore = create(
           scheduleSave();
         },
 
-        // ---------- smart fill
         fillMissingAssignmentsFromPrevBlock: () => {
           set((s) => {
             const bid = normalizeBlockId(s.currentBlockId, s.horaires);
@@ -814,7 +790,6 @@ export const useDriveStore = create(
           scheduleSave();
         },
 
-        // ---------- FORCER bloc (désactive sync)
         setCurrentBlockManual: (blockId) => {
           set((s) => {
             const bid = String(blockId ?? "");
@@ -866,7 +841,6 @@ export const useDriveStore = create(
           scheduleSave();
         },
 
-        // ---------- runtime
         startService: () => {
           set((s) => {
             if (!s.coordinator || s.dayStaff.length === 0) return s;
@@ -1175,7 +1149,6 @@ export const useDriveStore = create(
           scheduleSave();
         },
 
-        // ✅ Reset JOURNÉE (garde référentiels + règles)
         resetDay: () => {
           set((s) => {
             const first = getFirstBlockId(s.horaires, s.rotationMinutes);
@@ -1227,7 +1200,6 @@ export const useDriveStore = create(
       },
 
       partialize: (s) => ({
-        // ✅ ce qu’on veut garder au refresh
         siteCode: s.siteCode,
         dayDate: s.dayDate,
 
@@ -1267,6 +1239,9 @@ export const useDriveStore = create(
 
         apiStatus: s.apiStatus,
         apiError: s.apiError,
+
+        // ✅ on persiste le rôle (pratique)
+        memberRole: s.memberRole,
       }),
     }
   )
