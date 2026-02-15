@@ -1,10 +1,10 @@
-// src/pages/Setup.jsx
+// src/components/Setup.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { getFirstBlockId } from "../utils/blocks";
 import { supabase } from "../services/supabaseClient";
 
-export default function Setup() {
+export default function Setup({ adminState } = {}) {
   const {
     siteCode,
     setSiteCode,
@@ -44,18 +44,34 @@ export default function Setup() {
 
     startService,
     goCockpit,
+    goAdmin,
     resetDay,
 
     serviceStartedAt,
     dayStartedAt,
+
+    // ✅ nouveaux champs du store (si présents)
+    memberRole,
+    resetAuthState,
   } = useDriveStore();
 
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
-  const norm = (s) => String(s || "").trim().toUpperCase();
+  // ✅ input site: on évite d’appeler setSiteCode à chaque frappe
+  const [siteDraft, setSiteDraft] = useState((siteCode || "").toUpperCase());
 
-  // ✅ charge la session dès l’arrivée sur Setup
+  useEffect(() => {
+    setSiteDraft((siteCode || "").toUpperCase());
+  }, [siteCode]);
+
+  const adminLoading = !!adminState?.loading;
+  const role = adminState?.role ?? memberRole ?? null;
+  const isAdmin = adminState?.isAdmin ?? (role === "admin");
+
+  const normUpper = (s) => String(s || "").trim().toUpperCase();
+  const normLower = (s) => String(s || "").trim().toLowerCase();
+
   useEffect(() => {
     ensureSessionLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -68,7 +84,6 @@ export default function Setup() {
     [horaires, rotationMinutes]
   );
 
-  // ✅ FIX: éviter effectiveBlockId = "" (assignments[""])
   const effectiveBlockId = useMemo(() => {
     if (!isServiceRunning) return setupBlockId;
     const id = String(currentBlockId ?? "").trim();
@@ -78,11 +93,11 @@ export default function Setup() {
   const blockAssignments = assignments?.[effectiveBlockId] || {};
   const selectedStaff = useMemo(() => (dayStaff || []).slice().sort(), [dayStaff]);
 
-  const hasCoordinator = norm(coordinator) !== "";
+  const hasCoordinator = normUpper(coordinator) !== "";
   const hasStaff = (dayStaff || []).length > 0;
 
   const allHavePoste = selectedStaff.every((nom) => {
-    const key = norm(nom);
+    const key = normUpper(nom);
     return blockAssignments[key] && blockAssignments[key] !== "";
   });
 
@@ -103,15 +118,26 @@ export default function Setup() {
     setNewCoordo("");
   }
 
-  const waveMax = useMemo(() => Math.max(1, Math.min(dayStaff?.length || 1, 6)), [dayStaff]);
+  const waveMax = useMemo(
+    () => Math.max(1, Math.min(dayStaff?.length || 1, 6)),
+    [dayStaff]
+  );
+
+  async function commitSiteCode() {
+    const next = normLower(siteDraft);
+    if (!next) return;
+    // setSiteCode est async dans ton store (hydrate remote)
+    await setSiteCode(next);
+  }
 
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
-      // optionnel: refresh page ou reset UI
-      // window.location.reload();
     } catch (e) {
       console.error(e);
+    } finally {
+      // bonus : remet l’app sur pin même si listener tarde
+      resetAuthState?.();
     }
   }
 
@@ -129,13 +155,26 @@ export default function Setup() {
           </div>
 
           <div className="setupRight" style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
+            {/* ✅ Site code (draft + valider) */}
             <div>
               <label className="muted small">Site code</label>
-              <input
-                value={siteCode || ""}
-                onChange={(e) => setSiteCode(norm(e.target.value))}
-                placeholder="MELUN"
-              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  value={siteDraft}
+                  onChange={(e) => setSiteDraft(normUpper(e.target.value))}
+                  onBlur={commitSiteCode}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitSiteCode();
+                  }}
+                  placeholder="MELUN"
+                />
+                <button className="btn ghost" onClick={commitSiteCode} title="Valider le site">
+                  ✔
+                </button>
+              </div>
+              <div className="muted small" style={{ opacity: 0.7, marginTop: 2 }}>
+                Stocké en base: <b>{(siteCode || "").toLowerCase() || "—"}</b>
+              </div>
             </div>
 
             <div>
@@ -143,13 +182,33 @@ export default function Setup() {
               <input type="date" value={dayDate} onChange={(e) => setDayDate(e.target.value)} />
             </div>
 
+            {/* ✅ bouton Admin */}
+            {adminLoading ? (
+              <button className="btn ghost" disabled title="Vérification…">
+                🛠 Admin…
+              </button>
+            ) : isAdmin ? (
+              <button className="btn ghost" onClick={goAdmin} title="Aller sur la page Admin">
+                🛠 Admin
+              </button>
+            ) : null}
+
+            {isServiceRunning && (
+              <button className="btn ghost" onClick={goCockpit} title="Retour cockpit">
+                🧭 Cockpit
+              </button>
+            )}
+
             <button className="btn ghost" onClick={handleLogout} title="Se déconnecter">
               🚪 Déconnexion
             </button>
 
-            <div className="muted small" style={{ minWidth: 220 }}>
+            <div className="muted small" style={{ minWidth: 260 }}>
               API: <b>{apiStatus}</b>
               {apiError ? <span style={{ opacity: 0.85 }}> — {apiError}</span> : null}
+              <div style={{ opacity: 0.8, marginTop: 2 }}>
+                Rôle site: <b>{role || "—"}</b>
+              </div>
             </div>
           </div>
         </div>
@@ -167,12 +226,6 @@ export default function Setup() {
           >
             2) Placement initial
           </button>
-
-          {isServiceRunning && (
-            <button className="tab cta" onClick={goCockpit} title="Retour cockpit">
-              🧭 Cockpit
-            </button>
-          )}
         </div>
 
         {setupStep === 1 && (
@@ -291,11 +344,14 @@ export default function Setup() {
 
               <div className="placementGrid">
                 {selectedStaff.map((nom) => {
-                  const key = norm(nom);
+                  const key = normUpper(nom);
                   return (
                     <div key={nom} className="placementRow">
                       <div className="placementName">{nom}</div>
-                      <select value={blockAssignments[key] || ""} onChange={(e) => setInitialAssignment(nom, e.target.value)}>
+                      <select
+                        value={blockAssignments[key] || ""}
+                        onChange={(e) => setInitialAssignment(nom, e.target.value)}
+                      >
                         <option value="">-- Choisir poste --</option>
                         {postes.map((p) => (
                           <option key={p} value={p}>
@@ -333,8 +389,9 @@ export default function Setup() {
       <div className="card">
         <h2>Résumé</h2>
         <div className="muted">
-          Site: <b>{siteCode || "—"}</b> — Date: <b>{dayDate}</b> — Coordinateur: <b>{coordinator || "—"}</b> — Préparateurs:{" "}
-          <b>{dayStaff.length}</b> — Vague pause: <b>{pauseWaveSize || 1}</b>
+          Site: <b>{(siteCode || "—").toUpperCase()}</b> — Date: <b>{dayDate}</b> — Coordinateur:{" "}
+          <b>{coordinator || "—"}</b> — Préparateurs: <b>{dayStaff.length}</b> — Vague pause:{" "}
+          <b>{pauseWaveSize || 1}</b>
         </div>
       </div>
     </div>

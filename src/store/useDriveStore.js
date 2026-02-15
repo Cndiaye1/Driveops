@@ -21,6 +21,10 @@ function minutesToTime(min) {
   return `${pad2(h)}:${pad2(m)}`;
 }
 
+function normalizeSiteDb(siteCode) {
+  return String(siteCode || "").trim().toLowerCase();
+}
+
 // ✅ legacy index -> minutes id (ex: "8" => horaires[8]="14:00" => "840")
 function normalizeBlockId(blockId, horaires) {
   const raw = String(blockId ?? "");
@@ -102,7 +106,8 @@ function blockStartTimestamp(dayDate, blockStartMin, useSystemDate) {
 const TABLE = "drive_sessions";
 
 function sessionKey(siteCode, dayDate) {
-  return `${siteCode}__${dayDate}`;
+  // ✅ clé normalisée DB
+  return `${normalizeSiteDb(siteCode)}__${dayDate}`;
 }
 
 function isEmptyObject(x) {
@@ -121,12 +126,7 @@ function prettifyApiError(msgRaw) {
   if (lower.includes("jwt") || lower.includes("unauthorized") || lower.includes("not authenticated")) {
     return "Connexion requise (merci de te reconnecter).";
   }
-  if (
-    lower.includes("fetch") ||
-    lower.includes("network") ||
-    lower.includes("offline") ||
-    lower.includes("timeout")
-  ) {
+  if (lower.includes("fetch") || lower.includes("network") || lower.includes("offline") || lower.includes("timeout")) {
     return "Connexion instable — en attente…";
   }
   return msg;
@@ -215,12 +215,15 @@ function mergeRemoteIntoState(defaults, remoteJson) {
 
 // -----------------------------------------------------
 // Defaults
-const DEFAULT_SITE_CODE = (import.meta.env.VITE_SITE_CODE || "MELUN").trim().toUpperCase();
+const DEFAULT_SITE_CODE_UI = (import.meta.env.VITE_SITE_CODE || "MELUN").trim().toUpperCase();
 
 const defaultState = {
-  siteCode: DEFAULT_SITE_CODE,
+  siteCode: DEFAULT_SITE_CODE_UI, // UI (uppercase)
 
-  screen: "setup",
+  // ✅ auth state (App.jsx)
+  memberRole: null, // "admin"|"manager"|"user"|null
+
+  screen: "setup", // setup | cockpit | admin | pin
   setupStep: 1,
 
   wallMode: false,
@@ -287,7 +290,21 @@ const defaultState = {
 
   _pendingSave: false,
   _retryCount: 0,
+
+  _hasHydrated: false,
 };
+
+// -----------------------------------------------------
+// Hydration guard (évite wipe au refresh)
+let _hydrated = false;
+let _resolveHydrated = null;
+const hydratedPromise = new Promise((res) => {
+  _resolveHydrated = res;
+});
+async function awaitHydrated() {
+  if (_hydrated) return;
+  await hydratedPromise;
+}
 
 // -----------------------------------------------------
 // Store (persist local + sync supabase)
@@ -312,10 +329,12 @@ export const useDriveStore = create(
 
       // Remote: load + upsert
       const loadSession = async (siteCode, dayDate) => {
+        const siteDb = normalizeSiteDb(siteCode);
+
         const { data, error } = await supabase
           .from(TABLE)
           .select("id, site_code, day_date, state_json, updated_at")
-          .eq("site_code", siteCode)
+          .eq("site_code", siteDb)
           .eq("day_date", dayDate)
           .maybeSingle();
 
@@ -324,8 +343,10 @@ export const useDriveStore = create(
       };
 
       const upsertSession = async (siteCode, dayDate, stateJson) => {
+        const siteDb = normalizeSiteDb(siteCode);
+
         const payload = {
-          site_code: siteCode,
+          site_code: siteDb,
           day_date: dayDate,
           state_json: stateJson,
           updated_at: new Date().toISOString(),
@@ -358,6 +379,8 @@ export const useDriveStore = create(
       };
 
       const doSaveNow = async () => {
+        await awaitHydrated();
+
         const st = get();
         const key = sessionKey(st.siteCode, st.dayDate);
 
@@ -425,8 +448,9 @@ export const useDriveStore = create(
         }, 350);
       };
 
-      // Auto retry on "online" event
-      if (typeof window !== "undefined") {
+      // Auto retry on "online" event (une seule fois)
+      if (typeof window !== "undefined" && !window.__driveopsOnlineListener) {
+        window.__driveopsOnlineListener = true;
         window.addEventListener("online", () => {
           const st = get();
           if (st._pendingSave) doSaveNow();
@@ -437,7 +461,11 @@ export const useDriveStore = create(
       let currentChannel = null;
 
       const ensureRealtimeSubscribed = async (siteCode, dayDate) => {
-        const key = sessionKey(siteCode, dayDate);
+        await awaitHydrated();
+
+        const siteDb = normalizeSiteDb(siteCode);
+        const key = `${siteDb}__${dayDate}`;
+
         const st = get();
         if (st._subscribedKey === key) return;
 
@@ -454,17 +482,18 @@ export const useDriveStore = create(
               event: "*",
               schema: "public",
               table: TABLE,
-              filter: `site_code=eq.${siteCode},day_date=eq.${dayDate}`,
+              filter: `site_code=eq.${siteDb}`,
             },
             async (payload) => {
               const row = payload?.new || payload?.old;
               if (!row) return;
 
+              if (String(row.day_date) !== String(dayDate)) return;
+              if (isEmptyObject(row.state_json)) return;
+
               const now = Date.now();
               const st2 = get();
               if (now - (st2._lastLocalWriteAt || 0) < 700) return;
-
-              if (isEmptyObject(row.state_json)) return;
 
               const next = mergeRemoteIntoState(st2, row.state_json);
               set({
@@ -483,6 +512,8 @@ export const useDriveStore = create(
 
       // ---------------- Hydrate (REMOTE -> LOCAL)
       const hydrateFromRemote = async (siteCode, dayDate) => {
+        await awaitHydrated();
+
         const key = sessionKey(siteCode, dayDate);
         const st = get();
         if (st._sessionLoadedKey === key) return;
@@ -493,9 +524,8 @@ export const useDriveStore = create(
           const row = await loadSession(siteCode, dayDate);
 
           if (!row || isEmptyObject(row.state_json)) {
-            // ✅ pas de remote OU remote vide => on garde le local (persist) + on marque loaded
-            // ⚠️ on initialise currentBlockId si besoin
             const base = { ...get(), siteCode, dayDate };
+
             if (!base.currentBlockId || base.currentBlockId === "0") {
               base.currentBlockId = getFirstBlockId(base.horaires, base.rotationMinutes);
             }
@@ -508,7 +538,6 @@ export const useDriveStore = create(
               apiError: "",
             });
 
-            // tente de push si possible (sinon c’est ok, localStorage garde tout)
             await doSaveNow();
           } else {
             const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
@@ -542,39 +571,65 @@ export const useDriveStore = create(
       return {
         ...defaultState,
 
+        // ✅ compat si un ancien écran l’utilise encore
+        setScreen: (screen) => set((s) => ({ ...s, screen })),
+
+        // ✅ auth (App.jsx)
+        setMemberRole: (role) => set({ memberRole: role || null }),
+        resetAuthState: () =>
+          set((s) => ({
+            ...s,
+            memberRole: null,
+            screen: "pin",
+            apiStatus: "idle",
+            apiError: "",
+            _sessionLoadedKey: null,
+            _subscribedKey: null,
+          })),
+
+        setHasHydrated: (v) => set({ _hasHydrated: !!v }),
+
         // ✅ à appeler au démarrage (Setup/Cockpit)
         ensureSessionLoaded: async () => {
+          await awaitHydrated();
           const s = get();
           await hydrateFromRemote(s.siteCode, s.dayDate);
-        },
-
-        // ---------- site/date (clé = site+date)
-        setSiteCode: async (siteCode) => {
-          const v = String(siteCode || "").trim().toUpperCase();
-          if (!v) return;
-
-          set((s) => ({ ...s, siteCode: v, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
-          await hydrateFromRemote(v, get().dayDate);
-        },
-
-        setDayDate: async (dayDate) => {
-          const d = String(dayDate || "").slice(0, 10);
-          set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
-          await hydrateFromRemote(get().siteCode, d);
         },
 
         // ---------- navigation
         goSetup: () => set((s) => ({ ...s, screen: "setup" })),
         goCockpit: () => set((s) => ({ ...s, screen: "cockpit" })),
+        goAdmin: () => set((s) => ({ ...s, screen: "admin" })),
 
         setSetupStep: (setupStep) => set((s) => ({ ...s, setupStep })),
 
+        // ---------- site/date (clé = site+date)
+        setSiteCode: async (siteCode) => {
+          await awaitHydrated();
+
+          const ui = String(siteCode || "").trim().toUpperCase();
+          if (!ui) return;
+
+          set((s) => ({ ...s, siteCode: ui, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+          await hydrateFromRemote(ui, get().dayDate);
+        },
+
+        setDayDate: async (dayDate) => {
+          await awaitHydrated();
+
+          const d = String(dayDate || "").slice(0, 10);
+          set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+          await hydrateFromRemote(get().siteCode, d);
+        },
+
         // ---------- modes UI
-        setWallMode: (wallMode) => set((s) => ({ ...s, wallMode: !!wallMode })),
+        setWallMode: (wallMode) => {
+          set((s) => ({ ...s, wallMode: !!wallMode }));
+          scheduleSave();
+        },
         enterPrintMode: () => set((s) => ({ ...s, printMode: true })),
         exitPrintMode: () => set((s) => ({ ...s, printMode: false })),
 
-        // ---------- sync blocks
         setSyncBlocksToSystemClock: (value) => {
           set((s) => ({ ...s, syncBlocksToSystemClock: !!value }));
           scheduleSave();
@@ -1157,8 +1212,20 @@ export const useDriveStore = create(
       };
     },
     {
-      name: "driveops_v2", // ✅ anti-reset refresh
+      name: "driveops_v2",
       version: 1,
+
+      onRehydrateStorage: () => (state, err) => {
+        _hydrated = true;
+        _resolveHydrated?.();
+
+        state?.setHasHydrated?.(true);
+
+        if (err) {
+          console.warn("driveops persist hydration error:", err);
+        }
+      },
+
       partialize: (s) => ({
         // ✅ ce qu’on veut garder au refresh
         siteCode: s.siteCode,
@@ -1198,7 +1265,6 @@ export const useDriveStore = create(
         pausePrevPoste: s.pausePrevPoste,
         returnAlertUntil: s.returnAlertUntil,
 
-        // ✅ status pour affichage UI
         apiStatus: s.apiStatus,
         apiError: s.apiError,
       }),

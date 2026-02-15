@@ -2,27 +2,46 @@ import { useEffect, useState } from "react";
 import { supabase } from "../services/supabaseClient";
 
 export function useAuth() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+
+  async function loadProfile(userId) {
+    if (!userId) return setProfile(null);
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, full_name, role")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("profiles load error", error);
+      setProfile(null);
+      return;
+    }
+    setProfile(data || null);
+  }
 
   useEffect(() => {
-    let alive = true;
-
     supabase.auth.getSession().then(({ data }) => {
-      if (!alive) return;
-      setUser(data?.session?.user ?? null);
-      setLoading(false);
+      const s = data?.session || null;
+      setSession(s);
+      loadProfile(s?.user?.id);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => {
+      setSession(s || null);
+      loadProfile(s?.user?.id);
     });
 
-    return () => {
-      alive = false;
-      sub?.subscription?.unsubscribe?.();
-    };
+    return () => sub?.subscription?.unsubscribe?.();
   }, []);
 
-  return { user, loading };
+  const role = profile?.role || "user";
+  return {
+    session,
+    user: session?.user || null,
+    profile,
+    role,
+    isAdmin: role === "admin",
+  };
 }
