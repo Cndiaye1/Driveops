@@ -19,7 +19,6 @@ export default function Admin() {
   const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
   const isAdmin = useMemo(() => String(memberRole || "").trim().toLowerCase() === "admin", [memberRole]);
 
-  // prod: "" => same-origin
   const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
   const [sessionInfo, setSessionInfo] = useState({ email: "", id: "" });
@@ -32,34 +31,8 @@ export default function Admin() {
   const [membersLoading, setMembersLoading] = useState(false);
   const [q, setQ] = useState("");
 
-  function pushUrl(pathname) {
-    try {
-      if (typeof window !== "undefined" && window.location.pathname !== pathname) {
-        window.history.pushState({}, "", pathname);
-      }
-    } catch {}
-  }
-
-  function setScreenSafe(screen) {
-    try {
-      // Zustand store instance has setState
-      useDriveStore.setState({ screen });
-    } catch {}
-  }
-
-  function goToSetup() {
-    goSetup?.();
-    setScreenSafe("setup");
-    // ✅ important si tu es sur /admin sur Vercel
-    pushUrl("/");
-  }
-
-  function goToCockpit() {
-    goCockpit?.();
-    setScreenSafe("cockpit");
-    // cockpit est affiché par App.jsx (screen === "cockpit") sur la racine
-    pushUrl("/");
-  }
+  // per-row loading
+  const [rowBusy, setRowBusy] = useState({}); // { [user_id]: "role"|"pin"|"delete"|"" }
 
   async function getAccessToken() {
     const { data } = await supabase.auth.getSession();
@@ -71,12 +44,25 @@ export default function Admin() {
       await supabase.auth.signOut();
     } finally {
       resetAuthState?.();
-      setScreenSafe("setup");
-      // ✅ hard fallback
+      goSetup?.();
       try {
-        window.location.assign("/");
+        useDriveStore.setState({ screen: "setup" });
       } catch {}
     }
+  }
+
+  function goToSetup() {
+    goSetup?.();
+    try {
+      useDriveStore.setState({ screen: "setup" });
+    } catch {}
+  }
+
+  function goToCockpit() {
+    goCockpit?.();
+    try {
+      useDriveStore.setState({ screen: "cockpit" });
+    } catch {}
   }
 
   async function callApi(path, { method = "GET", body } = {}) {
@@ -85,39 +71,25 @@ export default function Admin() {
 
     const url = `${API_BASE}${path}`;
 
+    const r = await fetch(url, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const text = await r.text();
+    let j = {};
     try {
-      const r = await fetch(url, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          // utile si tu veux l’utiliser côté API + debug
-          "X-Site-Code": normalizedSite || "",
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
+      j = text ? JSON.parse(text) : {};
+    } catch {}
 
-      const text = await r.text();
-      let j = {};
-      try {
-        j = text ? JSON.parse(text) : {};
-      } catch {}
-
-      if (!r.ok) {
-        const message = j?.error || `Erreur API (${r.status})`;
-        const err = new Error(message);
-        err.status = r.status;
-        throw err;
-      }
-
-      return j;
-    } catch (e) {
-      const m = String(e?.message || e);
-      if (m.toLowerCase().includes("failed to fetch")) {
-        throw new Error("Failed to fetch (API inaccessible / proxy local / CORS / vercel dev non lancé).");
-      }
-      throw e;
+    if (!r.ok) {
+      throw new Error(j?.error || `Erreur API (${r.status})`);
     }
+    return j;
   }
 
   async function loadMembers() {
@@ -141,9 +113,6 @@ export default function Admin() {
   }
 
   useEffect(() => {
-    // ✅ si tu utilises /admin sur Vercel, on garde l’URL cohérente
-    pushUrl("/admin");
-
     (async () => {
       const { data } = await supabase.auth.getSession();
       setSessionInfo({
@@ -151,7 +120,6 @@ export default function Admin() {
         id: data?.session?.user?.id || "",
       });
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -167,7 +135,8 @@ export default function Admin() {
       const code = (m.member_code || "").toLowerCase();
       const role = (m.role || "").toLowerCase();
       const name = (m.full_name || "").toLowerCase();
-      return code.includes(s) || role.includes(s) || name.includes(s);
+      const email = (m.email || "").toLowerCase();
+      return code.includes(s) || role.includes(s) || name.includes(s) || email.includes(s);
     });
   }, [members, q]);
 
@@ -207,8 +176,74 @@ export default function Admin() {
     }
   }
 
+  async function changeRole(userId, newRole) {
+    if (!isAdmin) return;
+
+    setRowBusy((s) => ({ ...s, [userId]: "role" }));
+    setMsg(null);
+
+    try {
+      await callApi(`/api/admin/member-role`, {
+        method: "POST",
+        body: { siteCode: normalizedSite, userId, role: newRole },
+      });
+      await loadMembers();
+    } catch (e) {
+      setMsg({ type: "error", text: e?.message || "Erreur changement rôle" });
+    } finally {
+      setRowBusy((s) => ({ ...s, [userId]: "" }));
+    }
+  }
+
+  async function resetPin(userId) {
+    if (!isAdmin) return;
+    const pin = window.prompt("Nouveau PIN (min 4 chiffres) :");
+    if (!pin) return;
+
+    setRowBusy((s) => ({ ...s, [userId]: "pin" }));
+    setMsg(null);
+
+    try {
+      await callApi(`/api/admin/reset-pin`, {
+        method: "POST",
+        body: { siteCode: normalizedSite, userId, pin },
+      });
+      setMsg({ type: "success", text: "PIN mis à jour." });
+    } catch (e) {
+      setMsg({ type: "error", text: e?.message || "Erreur reset PIN" });
+    } finally {
+      setRowBusy((s) => ({ ...s, [userId]: "" }));
+    }
+  }
+
+  async function removeMember(userId, label) {
+    if (!isAdmin) return;
+    if (userId === sessionInfo.id) {
+      return setMsg({ type: "error", text: "Tu ne peux pas te supprimer toi-même." });
+    }
+
+    const ok = window.confirm(`Supprimer l'accès au site pour: ${label || userId} ?`);
+    if (!ok) return;
+
+    setRowBusy((s) => ({ ...s, [userId]: "delete" }));
+    setMsg(null);
+
+    try {
+      await callApi(`/api/admin/remove-member`, {
+        method: "POST",
+        body: { siteCode: normalizedSite, userId },
+      });
+      await loadMembers();
+      setMsg({ type: "success", text: "Membre supprimé du site." });
+    } catch (e) {
+      setMsg({ type: "error", text: e?.message || "Erreur suppression membre" });
+    } finally {
+      setRowBusy((s) => ({ ...s, [userId]: "" }));
+    }
+  }
+
   return (
-    <div style={{ padding: 16, maxWidth: 860, margin: "0 auto" }}>
+    <div style={{ padding: 16, maxWidth: 980, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <h2 style={{ margin: 0 }}>Admin</h2>
@@ -226,22 +261,16 @@ export default function Admin() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" onClick={goToSetup}>
-            ← Setup
-          </button>
-          <button type="button" onClick={goToCockpit}>
-            Cockpit
-          </button>
-          <button type="button" onClick={logout}>
-            Déconnexion
-          </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" onClick={goToSetup}>← Setup</button>
+          <button type="button" onClick={goToCockpit}>Cockpit</button>
+          <button type="button" onClick={logout}>Déconnexion</button>
         </div>
       </div>
 
       {!isAdmin && (
         <div style={{ marginTop: 14, padding: 12, border: "1px solid #444", borderRadius: 8 }}>
-          <b>Accès limité.</b> Tu dois être <b>admin</b> du site pour créer/assigner des membres.
+          <b>Accès limité.</b> Tu dois être <b>admin</b> du site pour créer/assigner/supprimer des membres.
         </div>
       )}
 
@@ -317,12 +346,12 @@ export default function Admin() {
       <div style={{ marginTop: 16, padding: 14, border: "1px solid #333", borderRadius: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <h3 style={{ margin: 0 }}>Membres du site</h3>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Recherche (code / rôle / nom)…"
-              style={{ minWidth: 240 }}
+              placeholder="Recherche (code / rôle / nom / email)…"
+              style={{ minWidth: 280 }}
             />
             <button type="button" onClick={loadMembers} disabled={membersLoading}>
               {membersLoading ? "..." : "Rafraîchir"}
@@ -331,31 +360,71 @@ export default function Admin() {
         </div>
 
         <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-          {(filtered || []).map((m) => (
-            <div
-              key={`${m.site_code}:${m.user_id}`}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 10,
-                border: "1px solid #444",
-                borderRadius: 8,
-                padding: 10,
-              }}
-            >
-              <div>
-                <div style={{ fontWeight: 800 }}>
-                  {m.member_code ? m.member_code : shortUuid(m.user_id)}{" "}
-                  {m.full_name ? <span style={{ opacity: 0.8 }}>· {m.full_name}</span> : null}
+          {(filtered || []).map((m) => {
+            const busy = rowBusy[m.user_id];
+            const label = m.member_code || m.full_name || m.email || shortUuid(m.user_id);
+            const isSelf = m.user_id === sessionInfo.id;
+
+            return (
+              <div
+                key={`${m.site_code}:${m.user_id}`}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto",
+                  gap: 10,
+                  border: "1px solid #444",
+                  borderRadius: 8,
+                  padding: 10,
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 800 }}>
+                    {m.member_code || shortUuid(m.user_id)}{" "}
+                    {m.full_name ? <span style={{ opacity: 0.8 }}>· {m.full_name}</span> : null}
+                    {isSelf ? <span style={{ marginLeft: 8, opacity: 0.8 }}>(toi)</span> : null}
+                  </div>
+
+                  <div style={{ opacity: 0.75, fontSize: 12, marginTop: 2 }}>
+                    {m.email ? <span>{m.email}</span> : null}
+                    {" · "}
+                    {m.created_at ? new Date(m.created_at).toLocaleString() : "—"}
+                  </div>
                 </div>
-                <div style={{ opacity: 0.75, fontSize: 12 }}>
-                  {m.created_at ? new Date(m.created_at).toLocaleString() : "—"}
+
+                <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
+                  <select
+                    value={m.role || "user"}
+                    disabled={!isAdmin || busy || (isSelf && m.role === "admin")}
+                    onChange={(e) => changeRole(m.user_id, e.target.value)}
+                    title={!isAdmin ? "Admin requis" : "Changer rôle"}
+                  >
+                    <option value="user">user</option>
+                    <option value="manager">manager</option>
+                    <option value="admin">admin</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    disabled={!isAdmin || busy}
+                    onClick={() => resetPin(m.user_id)}
+                    title="Changer le PIN"
+                  >
+                    {busy === "pin" ? "..." : "Reset PIN"}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!isAdmin || busy || isSelf}
+                    onClick={() => removeMember(m.user_id, label)}
+                    title={isSelf ? "Impossible de te supprimer" : "Retirer l’accès au site"}
+                  >
+                    {busy === "delete" ? "..." : "Supprimer"}
+                  </button>
                 </div>
               </div>
-
-              <div style={{ fontWeight: 800 }}>{m.role}</div>
-            </div>
-          ))}
+            );
+          })}
 
           {!membersLoading && (!filtered || filtered.length === 0) && (
             <div style={{ opacity: 0.8 }}>Aucun membre trouvé.</div>
