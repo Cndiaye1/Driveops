@@ -1,40 +1,53 @@
-// api/admin/list-members.js
-const { createClient } = require("@supabase/supabase-js");
+// api/admin/list-members.js  (ESM compatible Vercel + "type":"module")
+import { createClient } from "@supabase/supabase-js";
 
-function json(res, status, payload) {
+function sendJson(res, status, payload) {
   res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(payload));
 }
 
 function getBearer(req) {
-  const h = req.headers.authorization || "";
+  const h = req.headers?.authorization || "";
   const m = h.match(/^Bearer\s+(.+)$/i);
   return m ? m[1] : "";
 }
 
-module.exports = async (req, res) => {
-  if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
-
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) return json(res, 500, { error: "Missing env vars" });
-
-  const admin = createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
+function getQuery(req, key) {
+  // Vercel fournit souvent req.query, mais on ajoute un fallback robuste
+  if (req.query && req.query[key] != null) return req.query[key];
   try {
+    const u = new URL(req.url, "http://localhost");
+    return u.searchParams.get(key);
+  } catch {
+    return null;
+  }
+}
+
+export default async function handler(req, res) {
+  try {
+    if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !serviceKey) {
+      return sendJson(res, 500, { error: "Missing env vars: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" });
+    }
+
+    const admin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
     const token = getBearer(req);
-    if (!token) return json(res, 401, { error: "Missing token" });
+    if (!token) return sendJson(res, 401, { error: "Missing token" });
 
     const { data: u, error: uErr } = await admin.auth.getUser(token);
-    if (uErr || !u?.user?.id) return json(res, 401, { error: "Invalid token" });
+    if (uErr || !u?.user?.id) return sendJson(res, 401, { error: "Invalid token" });
     const callerId = u.user.id;
 
-    // ✅ lowercase (aligné DB + store)
-    const siteCode = String(req.query.siteCode || "").trim().toLowerCase();
-    if (!siteCode) return json(res, 400, { error: "siteCode required" });
+    const siteCode = String(getQuery(req, "siteCode") || "").trim().toLowerCase();
+    if (!siteCode) return sendJson(res, 400, { error: "siteCode required" });
 
     // check caller is admin for this site
     const { data: member, error: mErr } = await admin
@@ -44,8 +57,8 @@ module.exports = async (req, res) => {
       .eq("user_id", callerId)
       .maybeSingle();
 
-    if (mErr) return json(res, 500, { error: mErr.message });
-    if ((member?.role || "") !== "admin") return json(res, 403, { error: "Not admin" });
+    if (mErr) return sendJson(res, 500, { error: mErr.message });
+    if ((member?.role || "") !== "admin") return sendJson(res, 403, { error: "Not admin" });
 
     const { data: rows, error } = await admin
       .from("drive_site_members")
@@ -53,7 +66,7 @@ module.exports = async (req, res) => {
       .eq("site_code", siteCode)
       .order("member_code", { ascending: true, nullsFirst: false });
 
-    if (error) return json(res, 500, { error: error.message });
+    if (error) return sendJson(res, 500, { error: error.message });
 
     // join profiles (optional)
     const ids = (rows || []).map((r) => r.user_id).filter(Boolean);
@@ -71,8 +84,8 @@ module.exports = async (req, res) => {
       email: `${r.site_code}__${r.member_code || "code"}@driveops.local`,
     }));
 
-    return json(res, 200, { ok: true, members });
+    return sendJson(res, 200, { ok: true, members });
   } catch (e) {
-    return json(res, 500, { error: e?.message || String(e) });
+    return sendJson(res, 500, { error: e?.message || String(e) });
   }
-};
+}
