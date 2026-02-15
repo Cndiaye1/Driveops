@@ -1,4 +1,3 @@
-// src/store/useDriveStore.js
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { supabase } from "../services/supabaseClient";
@@ -26,7 +25,6 @@ function normalizeBlockId(blockId, horaires) {
   const raw = String(blockId ?? "");
   const n = Number(raw);
   const hs = Array.isArray(horaires) ? horaires : [];
-
   if (!Number.isFinite(n)) return raw;
 
   // legacy: id = index dans horaires
@@ -47,7 +45,6 @@ function buildBlocks(horaires, rotationMinutes) {
 
   const step = Math.max(1, Math.floor(Number(rotationMinutes) || 0));
   const blocks = [];
-
   for (let t = startMin; t < endMin; t += step) {
     const bStart = t;
     const bEnd = Math.min(t + step, endMin);
@@ -219,7 +216,6 @@ function mergeRemoteIntoState(defaults, remoteJson) {
 
 // -----------------------------------------------------
 // Defaults
-// ✅ IMPORTANT: site_code = lowercase (DB/RLS/API alignés)
 const DEFAULT_SITE_CODE = String(import.meta.env.VITE_SITE_CODE || "melun").trim().toLowerCase();
 
 const defaultState = {
@@ -234,24 +230,7 @@ const defaultState = {
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
   postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
-  horaires: [
-    "06:00",
-    "07:00",
-    "08:00",
-    "09:00",
-    "10:00",
-    "11:00",
-    "12:00",
-    "13:00",
-    "14:00",
-    "15:00",
-    "16:00",
-    "17:00",
-    "18:00",
-    "19:00",
-    "20:00",
-    "21:00",
-  ],
+  horaires: ["06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00"],
 
   rotationMinutes: 120,
   rotationWarnMinutes: 10,
@@ -290,15 +269,14 @@ const defaultState = {
 
   _pendingSave: false,
   _retryCount: 0,
-
   _hasHydrated: false,
 
-  // ✅ Auth / RBAC (local, pas besoin remote)
+  // Auth / RBAC (local)
   memberRole: null, // admin|manager|user|null
 };
 
 // -----------------------------------------------------
-// Hydration guard (évite wipe au refresh)
+// Hydration guard
 let _hydrated = false;
 let _resolveHydrated = null;
 const hydratedPromise = new Promise((res) => {
@@ -308,7 +286,6 @@ async function awaitHydrated() {
   if (_hydrated) return;
   await hydratedPromise;
 }
-
 // -----------------------------------------------------
 // Store (persist local + sync supabase)
 export const useDriveStore = create(
@@ -369,8 +346,8 @@ export const useDriveStore = create(
         if (!st._pendingSave) return;
 
         const ms = Math.min(20000, 1000 * Math.pow(2, Math.min(4, st._retryCount || 0)));
-
         if (retryTimer) clearTimeout(retryTimer);
+
         retryTimer = setTimeout(async () => {
           await doSaveNow();
         }, ms);
@@ -409,7 +386,6 @@ export const useDriveStore = create(
           });
         } catch (e) {
           const msg = String(e?.message || e);
-
           const isNetwork =
             msg.toLowerCase().includes("fetch") ||
             msg.toLowerCase().includes("network") ||
@@ -488,7 +464,7 @@ export const useDriveStore = create(
               if (now - (st2._lastLocalWriteAt || 0) < 700) return;
               if (isEmptyObject(row.state_json)) return;
 
-              // ✅ merge SAFE only (ignore screen/wall/print/admin, etc)
+              // ✅ merge SAFE only (ignore UI)
               const next = mergeRemoteIntoState(st2, row.state_json);
               set({
                 ...next,
@@ -533,7 +509,6 @@ export const useDriveStore = create(
 
             await doSaveNow();
           } else {
-            // ✅ merge SAFE only
             const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
 
             if (!merged.currentBlockId || merged.currentBlockId === "0") {
@@ -578,6 +553,7 @@ export const useDriveStore = create(
             ...s,
             memberRole: null,
             screen: "setup",
+            setupStep: 1,
             apiStatus: "idle",
             apiError: "",
             _sessionLoadedKey: null,
@@ -600,7 +576,6 @@ export const useDriveStore = create(
         // ---------- site/date (clé = site+date)
         setSiteCode: async (siteCode) => {
           await awaitHydrated();
-
           const v = String(siteCode || "").trim().toLowerCase();
           if (!v) return;
 
@@ -610,24 +585,20 @@ export const useDriveStore = create(
 
         setDayDate: async (dayDate) => {
           await awaitHydrated();
-
           const d = String(dayDate || "").slice(0, 10);
+
           set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
           await hydrateFromRemote(get().siteCode, d);
         },
 
-        // ---------- modes UI (LOCAL)
-        setWallMode: (wallMode) => {
-          set((s) => ({ ...s, wallMode: !!wallMode }));
-          // wallMode n’est plus “remote”, mais on peut garder l’auto-save pour le local persist
-          scheduleSave();
-        },
+        // ---------- modes UI (LOCAL) ✅ pas de save remote ici
+        setWallMode: (wallMode) => set((s) => ({ ...s, wallMode: !!wallMode })),
         enterPrintMode: () => set((s) => ({ ...s, printMode: true })),
         exitPrintMode: () => set((s) => ({ ...s, printMode: false })),
 
         setSyncBlocksToSystemClock: (value) => {
           set((s) => ({ ...s, syncBlocksToSystemClock: !!value }));
-          scheduleSave();
+          scheduleSave(); // ✅ métier => remote ok
         },
 
         // ---------- pauses config
@@ -811,6 +782,8 @@ export const useDriveStore = create(
           set((s) => {
             const bid = String(blockId ?? "");
             const curId = normalizeBlockId(s.currentBlockId, s.horaires);
+
+            // ✅ forcer mode manuel
             const syncBlocksToSystemClock = false;
 
             let { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
@@ -866,7 +839,6 @@ export const useDriveStore = create(
             const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
 
             const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
-
             const now = new Date();
             const sysStartMin = shouldSyncToday ? getBlockStartMinForNow(s.horaires, s.rotationMinutes, now) : null;
             const first = sysStartMin != null ? String(sysStartMin) : firstDefault;
@@ -1027,14 +999,9 @@ export const useDriveStore = create(
 
             const currentIndex = blocks.findIndex((b) => b.id === curId);
             const nextObj = currentIndex >= 0 ? blocks[currentIndex + 1] : null;
+
             if (!nextObj) {
-              return {
-                ...s,
-                currentBlockId: curId,
-                blockStartedAt: Date.now(),
-                rotationImminent: false,
-                rotationLocked: false,
-              };
+              return { ...s, currentBlockId: curId, blockStartedAt: Date.now(), rotationImminent: false, rotationLocked: false };
             }
 
             const nextBlockId = nextObj.id;
@@ -1086,9 +1053,7 @@ export const useDriveStore = create(
 
             let pauseTakenAt = s.pauseTakenAt || {};
             if (p === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
-              if (!pauseTakenAt[upperNom]) {
-                pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
-              }
+              if (!pauseTakenAt[upperNom]) pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
             }
 
             return { ...s, assignments, pausePrevPoste, pauseTakenAt };
@@ -1120,7 +1085,6 @@ export const useDriveStore = create(
             if (!upperNom) return s;
 
             const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
-
             const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
             if (cur !== "PAUSE") return s;
 
@@ -1203,17 +1167,30 @@ export const useDriveStore = create(
     },
     {
       name: "driveops_v2",
-      version: 1,
+
+      // ✅ IMPORTANT : on bump la version => purge/migration des vieux écrans collés (admin/cockpit)
+      version: 2,
 
       onRehydrateStorage: () => (state, err) => {
         _hydrated = true;
         _resolveHydrated?.();
-
         state?.setHasHydrated?.(true);
+        if (err) console.warn("driveops persist hydration error:", err);
+      },
 
-        if (err) {
-          console.warn("driveops persist hydration error:", err);
+      // ✅ migration localStorage (si tu venais d’une version qui t’a collé screen=admin)
+      migrate: (persisted, fromVersion) => {
+        const p = persisted || {};
+        if (!fromVersion || fromVersion < 2) {
+          return {
+            ...p,
+            screen: "setup",
+            setupStep: 1,
+            wallMode: false,
+            printMode: false,
+          };
         }
+        return p;
       },
 
       // ✅ local persist: ok de garder l’UI ici
