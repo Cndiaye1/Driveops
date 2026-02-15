@@ -3,33 +3,48 @@ import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../services/supabaseClient";
 import { useDriveStore } from "../store/useDriveStore";
 
-function shortUuid(u) {
-  if (!u) return "";
-  return `${u.slice(0, 8)}…${u.slice(-6)}`;
+function safeApiBase() {
+  const raw = (import.meta.env.VITE_API_BASE_URL || "").trim();
+  if (!raw) return "";
+  const clean = raw.replace(/\/+$/, "");
+
+  // si tu es sur Vercel mais que l'env pointe vers localhost => on ignore
+  if (typeof window !== "undefined") {
+    const envIsLocal = /localhost|127\.0\.0\.1/i.test(clean);
+    const runningLocal = /localhost|127\.0\.0\.1/i.test(window.location.hostname);
+    if (envIsLocal && !runningLocal) return "";
+  }
+  return clean;
 }
 
-function getApiBase() {
-  const raw = String(import.meta.env.VITE_API_BASE_URL || "").trim().replace(/\/$/, "");
-  if (!raw) return ""; // same origin
+async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw new Error(error.message);
+  const token = data?.session?.access_token;
+  if (!token) throw new Error("Session invalide. Reconnecte-toi.");
+  return token;
+}
 
-  // ✅ si on est en prod et que l'env pointe vers localhost -> on ignore
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname || "";
-    if (host && host !== "localhost" && raw.includes("localhost")) return "";
+async function readJsonSafe(res) {
+  const text = await res.text().catch(() => "");
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
   }
-  return raw;
 }
 
 export default function Admin() {
   const siteCode = useDriveStore((s) => s.siteCode);
   const memberRole = useDriveStore((s) => s.memberRole);
-  const goSetup = useDriveStore((s) => s.goSetup);
+  const setScreen = useDriveStore((s) => s.setScreen);
 
   const isAdmin = memberRole === "admin";
   const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
 
-  const API_BASE = useMemo(() => getApiBase(), []);
-  const apiUrl = (path) => (API_BASE ? `${API_BASE}${path}` : path);
+  const apiBase = useMemo(() => safeApiBase(), []);
+  const apiLabel = apiBase || "(same origin)";
 
   const [form, setForm] = useState({ code: "", pin: "", role: "user", fullName: "" });
   const [loading, setLoading] = useState(false);
@@ -43,47 +58,6 @@ export default function Admin() {
     await supabase.auth.signOut();
   }
 
-  async function getToken() {
-    const { data, error } = await supabase.auth.getSession();
-    if (error) throw new Error(error.message);
-    const token = data?.session?.access_token;
-    if (!token) throw new Error("Session invalide. Reconnecte-toi.");
-    return token;
-  }
-
-  async function loadMembers() {
-    if (!normalizedSite) return;
-    setMembersLoading(true);
-    setMsg(null);
-
-    try {
-      if (!isAdmin) {
-        setMembers([]);
-        return;
-      }
-
-      const token = await getToken();
-      const r = await fetch(apiUrl(`/api/admin/list-members?siteCode=${encodeURIComponent(normalizedSite)}`), {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.error || `Erreur list-members (${r.status})`);
-
-      setMembers(j?.members || []);
-    } catch (e) {
-      setMembers([]);
-      setMsg({ type: "error", text: e?.message || "Erreur" });
-    } finally {
-      setMembersLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    loadMembers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [normalizedSite, isAdmin]);
-
   const filtered = useMemo(() => {
     const s = (q || "").trim().toLowerCase();
     if (!s) return members;
@@ -95,6 +69,40 @@ export default function Admin() {
     });
   }, [members, q]);
 
+  async function loadMembers() {
+    if (!normalizedSite) {
+      setMembers([]);
+      return;
+    }
+    setMembersLoading(true);
+    setMsg(null);
+
+    try {
+      const token = await getAccessToken();
+      const url = `${apiBase}/api/admin/list-members?siteCode=${encodeURIComponent(normalizedSite)}`;
+
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const j = await readJsonSafe(res);
+      if (!res.ok) throw new Error(j?.error || `Erreur list-members (${res.status})`);
+
+      setMembers(j?.members || []);
+    } catch (e) {
+      setMembers([]);
+      setMsg({ type: "error", text: e?.message || "Erreur chargement membres" });
+    } finally {
+      setMembersLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [normalizedSite]);
+
   async function onSubmit(e) {
     e.preventDefault();
     setMsg(null);
@@ -102,28 +110,36 @@ export default function Admin() {
     if (!normalizedSite) return setMsg({ type: "error", text: "Site manquant. Reviens au Setup." });
     if (!isAdmin) return setMsg({ type: "error", text: "Accès refusé : tu n’es pas admin." });
 
-    const code = form.code.trim().toLowerCase();
-    const pin = form.pin.trim();
-    const role = form.role.trim().toLowerCase();
-    const fullName = form.fullName.trim();
+    const code = String(form.code || "").trim().toLowerCase();
+    const pin = String(form.pin || "").trim();
+    const role = String(form.role || "user").trim().toLowerCase();
+    const fullName = String(form.fullName || "").trim();
 
     if (!code || !pin) return setMsg({ type: "error", text: "CODE et PIN obligatoires." });
     if (!["admin", "manager", "user"].includes(role)) return setMsg({ type: "error", text: "Rôle invalide." });
 
     setLoading(true);
     try {
-      const token = await getToken();
+      const token = await getAccessToken();
+      const url = `${apiBase}/api/admin/create-user`;
 
-      const r = await fetch(apiUrl(`/api/admin/create-user`), {
+      const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ siteCode: normalizedSite, code, pin, role, fullName }),
       });
 
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.error || `Erreur create-user (${r.status})`);
+      const j = await readJsonSafe(res);
+      if (!res.ok) throw new Error(j?.error || `Erreur create-user (${res.status})`);
 
-      setMsg({ type: "success", text: `${j.created ? "Créé" : "Mis à jour"} : ${j.member_code} (${j.role})` });
+      setMsg({
+        type: "success",
+        text: `${j.created ? "Créé" : "Mis à jour"} : ${j.member_code} (${j.role})`,
+      });
+
       setForm({ code: "", pin: "", role: "user", fullName: "" });
       await loadMembers();
     } catch (err) {
@@ -134,20 +150,20 @@ export default function Admin() {
   }
 
   return (
-    <div style={{ padding: 16, maxWidth: 760, margin: "0 auto" }}>
+    <div style={{ padding: 16, maxWidth: 820, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <h2 style={{ margin: 0 }}>Admin</h2>
           <div style={{ opacity: 0.8, marginTop: 4 }}>
             Site: <b>{normalizedSite || "—"}</b> · Ton rôle: <b>{memberRole || "—"}</b>
           </div>
-          <div style={{ opacity: 0.6, marginTop: 2, fontSize: 12 }}>
-            API base: <b>{API_BASE || "(same origin)"}</b>
+          <div style={{ opacity: 0.7, marginTop: 4, fontSize: 12 }}>
+            API base: <b>{apiLabel}</b>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={goSetup}>← Setup</button>
+          <button onClick={() => setScreen("setup")}>← Setup</button>
           <button onClick={logout}>Déconnexion</button>
         </div>
       </div>
@@ -177,7 +193,7 @@ export default function Admin() {
             <input
               value={form.code}
               onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))}
-              placeholder="ex: admin / p01 / bamba"
+              placeholder="ex: p01 / bamba / cheikh"
               style={{ width: "100%" }}
             />
           </label>
@@ -235,7 +251,7 @@ export default function Admin() {
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Recherche (code / rôle / nom)…"
-              style={{ minWidth: 220 }}
+              style={{ minWidth: 260 }}
             />
             <button onClick={loadMembers} disabled={membersLoading}>
               {membersLoading ? "..." : "Rafraîchir"}
@@ -258,12 +274,10 @@ export default function Admin() {
             >
               <div>
                 <div style={{ fontWeight: 800 }}>
-                  {m.member_code ? m.member_code : shortUuid(m.user_id)}
-                  {m.full_name ? <span style={{ fontWeight: 500, opacity: 0.8 }}> · {m.full_name}</span> : null}
+                  {m.member_code || m.user_id}
+                  {m.full_name ? <span style={{ opacity: 0.8 }}> — {m.full_name}</span> : null}
                 </div>
-                <div style={{ opacity: 0.75, fontSize: 12 }}>
-                  {m.created_at ? new Date(m.created_at).toLocaleString() : "—"}
-                </div>
+                <div style={{ opacity: 0.75, fontSize: 12 }}>{m.email || "—"}</div>
               </div>
 
               <div style={{ fontWeight: 800 }}>{m.role}</div>
