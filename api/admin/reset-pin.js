@@ -1,66 +1,52 @@
-const { createClient } = require("@supabase/supabase-js");
-
-function json(res, status, payload) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify(payload));
-}
-function getBearer(req) {
-  const h = req.headers.authorization || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : "";
-}
-function readBody(req) {
-  try {
-    if (!req.body) return {};
-    if (typeof req.body === "string") return JSON.parse(req.body);
-    return req.body;
-  } catch {
-    return {};
-  }
-}
+// api/admin/reset-pin.js
+const {
+  json,
+  handleCors,
+  readBody,
+  getSiteCode,
+  supabaseAdmin,
+  requireUser,
+  ensureAdminOrBootstrap,
+} = require("./_lib");
 
 module.exports = async (req, res) => {
-  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
-
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceKey) return json(res, 500, { error: "Missing env vars" });
-
-  const admin = createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
   try {
-    const token = getBearer(req);
-    if (!token) return json(res, 401, { error: "Missing token" });
+    if (handleCors(req, res)) return;
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
 
-    const { data: u, error: uErr } = await admin.auth.getUser(token);
-    if (uErr || !u?.user?.id) return json(res, 401, { error: "Invalid token" });
-    const callerId = u.user.id;
+    const sb = supabaseAdmin();
+    const caller = await requireUser(req, sb);
+    const body = await readBody(req);
 
-    const body = readBody(req);
-    const siteCode = String(body.siteCode || "").trim().toUpperCase();
-    const userId = String(body.userId || "").trim();
+    const site_code = getSiteCode(req, body);
+    let user_id = String(body.userId || body.user_id || "").trim();
     const pin = String(body.pin || "").trim();
+    const member_code = String(body.code || body.member_code || "").trim().toLowerCase();
 
-    if (!siteCode || !userId || !pin) return json(res, 400, { error: "siteCode, userId, pin required" });
+    if (!site_code || !pin || (!user_id && !member_code)) {
+      return json(res, 400, { ok: false, error: "siteCode, pin and (userId OR code) required" });
+    }
 
-    const { data: member, error: mErr } = await admin
-      .from("drive_site_members")
-      .select("role")
-      .eq("site_code", siteCode)
-      .eq("user_id", callerId)
-      .maybeSingle();
+    await ensureAdminOrBootstrap(sb, site_code, caller.id);
 
-    if (mErr) return json(res, 500, { error: mErr.message });
-    if ((member?.role || "") !== "admin") return json(res, 403, { error: "Not admin" });
+    // option: reset by member_code
+    if (!user_id && member_code) {
+      const { data, error } = await sb
+        .from("drive_site_members")
+        .select("user_id")
+        .eq("site_code", site_code)
+        .eq("member_code", member_code)
+        .maybeSingle();
+      if (error) return json(res, 500, { ok: false, error: error.message });
+      user_id = data?.user_id || "";
+      if (!user_id) return json(res, 404, { ok: false, error: "Member not found" });
+    }
 
-    const { error: upErr } = await admin.auth.admin.updateUserById(userId, { password: pin });
-    if (upErr) return json(res, 500, { error: upErr.message });
+    const { error: upErr } = await sb.auth.admin.updateUserById(user_id, { password: pin });
+    if (upErr) return json(res, 500, { ok: false, error: upErr.message });
 
     return json(res, 200, { ok: true });
   } catch (e) {
-    return json(res, 500, { error: e?.message || String(e) });
+    return json(res, e.status || 500, { ok: false, error: e?.message || String(e) });
   }
 };

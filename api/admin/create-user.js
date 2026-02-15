@@ -1,182 +1,120 @@
-const { createClient } = require("@supabase/supabase-js");
+// api/admin/create-user.js
+const {
+  json,
+  handleCors,
+  readBody,
+  getSiteCode,
+  normalizeSiteCode,
+  supabaseAdmin,
+  requireUser,
+  ensureAdminOrBootstrap,
+} = require("./_lib");
 
-function json(res, status, payload) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(payload));
+function normalizeCode(v) {
+  return String(v || "").trim().toLowerCase();
 }
-
-function handleCors(req, res) {
-  const origin = req.headers.origin || "*";
-  res.setHeader("Access-Control-Allow-Origin", origin);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Site-Code");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-
-  if (req.method === "OPTIONS") {
-    res.statusCode = 204;
-    res.end();
-    return true;
-  }
-  return false;
-}
-
-function getBearer(req) {
-  const h = req.headers?.authorization || "";
-  const m = h.match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : "";
-}
-
-function readBody(req) {
-  if (!req.body) return {};
-  if (Buffer.isBuffer(req.body)) {
-    try { return JSON.parse(req.body.toString("utf8")); } catch { return {}; }
-  }
-  if (typeof req.body === "string") {
-    try { return JSON.parse(req.body); } catch { return {}; }
-  }
-  return req.body;
-}
-
-function getEnv() {
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !serviceKey) {
-    return { error: "Missing env vars: SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" };
-  }
-  if (String(serviceKey).startsWith("sb_publishable")) {
-    return { error: "SUPABASE_SERVICE_ROLE_KEY invalide : tu as mis une clé publishable. Mets la clé service_role (sb_secret_...)." };
-  }
-  return { supabaseUrl, serviceKey };
-}
-
-async function ensureAdminOrBootstrap({ admin, siteCode, requesterId }) {
-  const { data: m, error: mErr } = await admin
-    .from("drive_site_members")
-    .select("role")
-    .eq("site_code", siteCode)
-    .eq("user_id", requesterId)
-    .maybeSingle();
-
-  if (mErr) throw Object.assign(new Error(mErr.message), { status: 500 });
-
-  const role = String(m?.role || "").trim().toLowerCase();
-  if (role === "admin") return;
-
-  const { data: anyAdmin, error: aErr } = await admin
-    .from("drive_site_members")
-    .select("user_id")
-    .eq("site_code", siteCode)
-    .eq("role", "admin")
-    .limit(1)
-    .maybeSingle();
-
-  if (aErr) throw Object.assign(new Error(aErr.message), { status: 500 });
-
-  if (!anyAdmin?.user_id) {
-    const { error: upErr } = await admin.from("drive_site_members").upsert(
-      { site_code: siteCode, user_id: requesterId, role: "admin", member_code: "admin" },
-      { onConflict: "site_code,user_id" }
-    );
-    if (upErr) throw Object.assign(new Error(upErr.message), { status: 500 });
-    return;
-  }
-
-  throw Object.assign(new Error("Not admin"), { status: 403 });
+function normalizeRole(v) {
+  return String(v || "").trim().toLowerCase();
 }
 
 module.exports = async (req, res) => {
   try {
     if (handleCors(req, res)) return;
-    if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+    if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
 
-    const env = getEnv();
-    if (env.error) return json(res, 500, { error: env.error });
+    const sb = supabaseAdmin();
+    const caller = await requireUser(req, sb);
+    const body = await readBody(req);
 
-    const admin = createClient(env.supabaseUrl, env.serviceKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+    const site_code = getSiteCode(req, body);
+    const code = normalizeCode(body.code);
+    const pin = String(body.pin || "").trim();
+    const role = normalizeRole(body.role);
+    const fullName = String(body.fullName || body.full_name || "").trim();
 
-    const token = getBearer(req);
-    if (!token) return json(res, 401, { error: "Missing token" });
-
-    const { data: u, error: uErr } = await admin.auth.getUser(token);
-    if (uErr || !u?.user?.id) return json(res, 401, { error: "Invalid token" });
-    const requesterId = u.user.id;
-
-    const body = readBody(req);
-
-    const site_code = String(body.siteCode || req.headers["x-site-code"] || "").trim().toLowerCase();
-    const member_code = String(body.code || "").trim().toLowerCase();
-    const password = String(body.pin || "").trim();
-    const member_role = String(body.role || "user").trim().toLowerCase();
-    const full_name = String(body.fullName || "").trim();
-
-    if (!site_code || !member_code || !password) {
-      return json(res, 400, { error: "Missing required fields: siteCode, code, pin" });
+    if (!site_code || !code || !pin || !role) {
+      return json(res, 400, { ok: false, error: "siteCode, code, pin, role required" });
     }
-    if (!["admin", "manager", "user"].includes(member_role)) {
-      return json(res, 400, { error: "Invalid role (admin|manager|user)" });
-    }
-    if (password.length < 4) {
-      return json(res, 400, { error: "PIN too short (min 4)" });
+    if (!["admin", "manager", "user"].includes(role)) {
+      return json(res, 400, { ok: false, error: "role must be admin|manager|user" });
     }
 
-    await ensureAdminOrBootstrap({ admin, siteCode: site_code, requesterId });
+    await ensureAdminOrBootstrap(sb, site_code, caller.id);
 
-    const email = `${site_code}__${member_code}@driveops.local`;
-
-    let existingUser = null;
-    {
-      const { data, error } = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-      if (error) return json(res, 500, { error: error.message });
-      existingUser = (data?.users || []).find((x) => (x.email || "").toLowerCase() === email);
-    }
-
-    let userId;
-    if (!existingUser) {
-      const { data, error } = await admin.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-        user_metadata: { site_code, member_code, full_name },
-      });
-      if (error) return json(res, 500, { error: error.message });
-      userId = data.user.id;
-    } else {
-      userId = existingUser.id;
-      const { error } = await admin.auth.admin.updateUserById(userId, {
-        password,
-        email_confirm: true,
-        user_metadata: { site_code, member_code, full_name },
-      });
-      if (error) return json(res, 500, { error: error.message });
-    }
-
-    const { error: pErr } = await admin
-      .from("profiles")
-      .upsert({ id: userId, full_name: full_name || null }, { onConflict: "id" });
-    if (pErr) return json(res, 500, { error: pErr.message });
-
-    const { error: msErr } = await admin
+    // 1) si membre existe déjà via member_code => update
+    const { data: existing, error: eErr } = await sb
       .from("drive_site_members")
-      .upsert(
-        { site_code, user_id: userId, role: member_role, member_code },
-        { onConflict: "site_code,user_id" }
-      );
-    if (msErr) return json(res, 500, { error: msErr.message });
+      .select("user_id")
+      .eq("site_code", site_code)
+      .eq("member_code", code)
+      .maybeSingle();
+
+    if (eErr) return json(res, 500, { ok: false, error: eErr.message });
+
+    let userId = existing?.user_id || null;
+    let created = false;
+
+    // email de login “technique”
+    const email = `${normalizeSiteCode(site_code)}__${code}@driveops.local`;
+
+    if (!userId) {
+      // 2) create auth user
+      const { data: createdUser, error: cErr } = await sb.auth.admin.createUser({
+        email,
+        password: pin,
+        email_confirm: true,
+      });
+
+      if (cErr) {
+        return json(res, 500, {
+          ok: false,
+          error:
+            cErr.message ||
+            "Erreur createUser. (Si l’utilisateur existe déjà côté Auth, ré-assigne-le via drive_site_members.)",
+        });
+      }
+
+      userId = createdUser?.user?.id || null;
+      if (!userId) return json(res, 500, { ok: false, error: "Auth user id missing" });
+      created = true;
+
+      // insert membership
+      const { error: insErr } = await sb.from("drive_site_members").insert({
+        site_code,
+        user_id: userId,
+        member_code: code,
+        role,
+      });
+
+      if (insErr) return json(res, 500, { ok: false, error: insErr.message });
+    } else {
+      // 3) update pin + role
+      const { error: upAuthErr } = await sb.auth.admin.updateUserById(userId, { password: pin });
+      if (upAuthErr) return json(res, 500, { ok: false, error: upAuthErr.message });
+
+      const { error: upRoleErr } = await sb
+        .from("drive_site_members")
+        .update({ role })
+        .eq("site_code", site_code)
+        .eq("member_code", code);
+
+      if (upRoleErr) return json(res, 500, { ok: false, error: upRoleErr.message });
+    }
+
+    // 4) profile (optionnel)
+    if (fullName) {
+      await sb.from("profiles").upsert({ id: userId, full_name: fullName }, { onConflict: "id" });
+    }
 
     return json(res, 200, {
       ok: true,
-      created: !existingUser,
-      site_code,
-      member_code,
-      role: member_role,
+      created,
+      user_id: userId,
+      member_code: code,
+      role,
       email,
-      userId,
     });
   } catch (e) {
-    return json(res, e.status || 500, { error: e?.message || String(e) });
+    return json(res, e.status || 500, { ok: false, error: e?.message || String(e) });
   }
 };
