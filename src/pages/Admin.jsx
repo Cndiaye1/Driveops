@@ -10,6 +10,8 @@ function shortUuid(u) {
 
 export default function Admin() {
   const siteCode = useDriveStore((s) => s.siteCode);
+  const setSiteCode = useDriveStore((s) => s.setSiteCode);
+
   const memberRole = useDriveStore((s) => s.memberRole);
 
   const goSetup = useDriveStore((s) => s.goSetup);
@@ -17,6 +19,7 @@ export default function Admin() {
   const resetAuthState = useDriveStore((s) => s.resetAuthState);
 
   const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
+
   const isAdmin = useMemo(
     () => String(memberRole || "").trim().toLowerCase() === "admin",
     [memberRole]
@@ -26,6 +29,19 @@ export default function Admin() {
 
   const [sessionInfo, setSessionInfo] = useState({ email: "", id: "" });
 
+  // ---- Global admin / multi-sites (optionnel, si endpoint dispo)
+  const [isGlobalAdmin, setIsGlobalAdmin] = useState(false);
+  const [sites, setSites] = useState([]);
+  const [sitesLoading, setSitesLoading] = useState(false);
+
+  // site cible pour l’admin (ne change pas automatiquement le site “opérationnel” du store)
+  const [adminSite, setAdminSite] = useState("");
+
+  // ---- Create site (optionnel)
+  const [siteForm, setSiteForm] = useState({ code: "", name: "" });
+  const [siteCreating, setSiteCreating] = useState(false);
+
+  // ---- Members
   const [form, setForm] = useState({ code: "", pin: "", role: "user", fullName: "" });
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -34,8 +50,20 @@ export default function Admin() {
   const [membersLoading, setMembersLoading] = useState(false);
   const [q, setQ] = useState("");
 
-  // loading actions par membre
-  const [actionLoading, setActionLoading] = useState({}); // { [user_id]: "role"|"pin"|"delete"|true }
+  const [actionLoading, setActionLoading] = useState({}); // { [user_id]: "role"|"pin"|"delete"|false }
+
+  const canManage = useMemo(() => isAdmin || isGlobalAdmin, [isAdmin, isGlobalAdmin]);
+
+  // adminSite init/sync
+  useEffect(() => {
+    // au départ on cible le site du store
+    setAdminSite((prev) => prev || normalizedSite || "");
+  }, [normalizedSite]);
+
+  // si pas global, on force adminSite = site du store
+  useEffect(() => {
+    if (!isGlobalAdmin) setAdminSite(normalizedSite || "");
+  }, [isGlobalAdmin, normalizedSite]);
 
   async function getAccessToken() {
     const { data } = await supabase.auth.getSession();
@@ -55,19 +83,33 @@ export default function Admin() {
     setActionLoading((s) => ({ ...s, [userId]: v }));
   }
 
-  async function callApi(path, { method = "GET", body } = {}) {
+  async function callApi(
+    path,
+    {
+      method = "GET",
+      body,
+      // si tu veux forcer un site pour une requête
+      site = adminSite,
+      // si endpoint global (pas besoin du header X-Site-Code)
+      includeSiteHeader = true,
+    } = {}
+  ) {
     const token = await getAccessToken();
     if (!token) throw new Error("Session invalide (token manquant). Reconnecte-toi.");
 
-    const url = `${API_BASE}${path}`;
+    const url = `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    };
+    if (includeSiteHeader) {
+      headers["X-Site-Code"] = (site || "").trim().toLowerCase();
+    }
 
     const r = await fetch(url, {
       method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        "X-Site-Code": normalizedSite || "",
-      },
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
 
@@ -86,8 +128,69 @@ export default function Admin() {
     return j;
   }
 
+  // ------------------------
+  // Sites (optionnel)
+  async function loadSites() {
+    setSitesLoading(true);
+    try {
+      // endpoint global -> pas de X-Site-Code requis
+      const j = await callApi("/api/admin/list-sites", { includeSiteHeader: false });
+
+      const list = j?.sites || j?.data || [];
+      if (Array.isArray(list)) {
+        setSites(list);
+        setIsGlobalAdmin(true);
+      } else {
+        setSites([]);
+        setIsGlobalAdmin(false);
+      }
+    } catch {
+      // si endpoint pas présent / pas autorisé => on ne casse pas la page
+      setSites([]);
+      setIsGlobalAdmin(false);
+    } finally {
+      setSitesLoading(false);
+    }
+  }
+
+  async function createSite(e) {
+    e?.preventDefault?.();
+    if (!isGlobalAdmin) return;
+
+    const code = String(siteForm.code || "").trim().toLowerCase();
+    const name = String(siteForm.name || "").trim();
+    if (!code) return setMsg({ type: "error", text: "Code site requis (ex: melun)." });
+
+    setSiteCreating(true);
+    setMsg(null);
+    try {
+      await callApi("/api/admin/site-create", {
+        method: "POST",
+        includeSiteHeader: false, // global
+        body: {
+          siteCode: code,
+          site_code: code, // tolérant
+          name: name || null,
+        },
+      });
+
+      setMsg({ type: "success", text: `Site créé / existant : ${code}` });
+      setSiteForm({ code: "", name: "" });
+      await loadSites();
+      // cible direct le nouveau site dans l’admin
+      setAdminSite(code);
+    } catch (e2) {
+      setMsg({ type: "error", text: e2?.message || "Erreur site-create" });
+    } finally {
+      setSiteCreating(false);
+    }
+  }
+
+  // ------------------------
+  // Members
   async function loadMembers() {
-    if (!normalizedSite) {
+    const targetSite = (adminSite || "").trim().toLowerCase();
+    if (!targetSite) {
       setMembers([]);
       return;
     }
@@ -97,7 +200,8 @@ export default function Admin() {
 
     try {
       const j = await callApi(
-        `/api/admin/list-members?siteCode=${encodeURIComponent(normalizedSite)}`
+        `/api/admin/list-members?siteCode=${encodeURIComponent(targetSite)}`,
+        { site: targetSite }
       );
       setMembers(j?.members || []);
     } catch (e) {
@@ -118,10 +222,17 @@ export default function Admin() {
     })();
   }, []);
 
+  // charge list-sites (si dispo)
+  useEffect(() => {
+    loadSites();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // recharge les membres quand le site cible change
   useEffect(() => {
     loadMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [normalizedSite]);
+  }, [adminSite]);
 
   const filtered = useMemo(() => {
     const s = (q || "").trim().toLowerCase();
@@ -150,8 +261,9 @@ export default function Admin() {
     e.preventDefault();
     setMsg(null);
 
-    if (!normalizedSite) return setMsg({ type: "error", text: "Site manquant. Reviens au Setup." });
-    if (!isAdmin) return setMsg({ type: "error", text: "Accès refusé : tu n’es pas admin." });
+    const targetSite = (adminSite || "").trim().toLowerCase();
+    if (!targetSite) return setMsg({ type: "error", text: "Site manquant. Reviens au Setup." });
+    if (!canManage) return setMsg({ type: "error", text: "Accès refusé : admin requis." });
 
     const code = form.code.trim().toLowerCase();
     const pin = form.pin.trim();
@@ -166,7 +278,8 @@ export default function Admin() {
     try {
       const j = await callApi(`/api/admin/create-user`, {
         method: "POST",
-        body: { siteCode: normalizedSite, code, pin, role, fullName },
+        site: targetSite,
+        body: { siteCode: targetSite, code, pin, role, fullName },
       });
 
       setMsg({
@@ -184,7 +297,7 @@ export default function Admin() {
   }
 
   async function updateRole(userId, nextRole) {
-    if (!isAdmin) return;
+    if (!canManage) return;
     const role = String(nextRole || "").toLowerCase();
     if (!["admin", "manager", "user"].includes(role)) return;
 
@@ -192,12 +305,14 @@ export default function Admin() {
       return setMsg({ type: "error", text: "Impossible : c’est le dernier admin du site." });
     }
 
+    const targetSite = (adminSite || "").trim().toLowerCase();
     setRowLoading(userId, "role");
     setMsg(null);
     try {
       await callApi(`/api/admin/member-role`, {
         method: "POST",
-        body: { siteCode: normalizedSite, userId, role },
+        site: targetSite,
+        body: { siteCode: targetSite, userId, role },
       });
       setMsg({ type: "success", text: "Rôle mis à jour." });
       await loadMembers();
@@ -209,17 +324,19 @@ export default function Admin() {
   }
 
   async function resetPin(userId, memberCode) {
-    if (!isAdmin) return;
+    if (!canManage) return;
 
     const pin = window.prompt(`Nouveau PIN pour ${memberCode || shortUuid(userId)} :`);
     if (!pin) return;
 
+    const targetSite = (adminSite || "").trim().toLowerCase();
     setRowLoading(userId, "pin");
     setMsg(null);
     try {
       await callApi(`/api/admin/reset-pin`, {
         method: "POST",
-        body: { siteCode: normalizedSite, userId, pin: String(pin).trim() },
+        site: targetSite,
+        body: { siteCode: targetSite, userId, pin: String(pin).trim() },
       });
       setMsg({ type: "success", text: "PIN réinitialisé." });
     } catch (e) {
@@ -230,7 +347,7 @@ export default function Admin() {
   }
 
   async function removeMember(userId, memberCode) {
-    if (!isAdmin) return;
+    if (!canManage) return;
 
     if (userId === sessionInfo.id) {
       return setMsg({ type: "error", text: "Tu ne peux pas te supprimer toi-même." });
@@ -240,8 +357,9 @@ export default function Admin() {
       return setMsg({ type: "error", text: "Impossible : c’est le dernier admin du site." });
     }
 
+    const targetSite = (adminSite || "").trim().toLowerCase();
     const ok = window.confirm(
-      `Supprimer le membre "${memberCode || shortUuid(userId)}" du site ${normalizedSite} ?`
+      `Supprimer le membre "${memberCode || shortUuid(userId)}" du site ${targetSite} ?`
     );
     if (!ok) return;
 
@@ -250,7 +368,8 @@ export default function Admin() {
     try {
       await callApi(`/api/admin/remove-member`, {
         method: "POST",
-        body: { siteCode: normalizedSite, userId },
+        site: targetSite,
+        body: { siteCode: targetSite, userId },
       });
       setMsg({ type: "success", text: "Membre supprimé du site." });
       await loadMembers();
@@ -260,6 +379,8 @@ export default function Admin() {
       setRowLoading(userId, false);
     }
   }
+
+  const targetSiteLabel = (adminSite || "").trim().toLowerCase() || "—";
 
   return (
     <div style={{ padding: 16, maxWidth: 980, margin: "0 auto" }}>
@@ -276,11 +397,16 @@ export default function Admin() {
           <h2 style={{ margin: 0 }}>Admin</h2>
 
           <div style={{ opacity: 0.8, marginTop: 4 }}>
-            Site: <b>{normalizedSite || "—"}</b> · Ton rôle: <b>{memberRole || "—"}</b>
+            Site (app): <b>{normalizedSite || "—"}</b> · Ton rôle:{" "}
+            <b>{memberRole || "—"}</b>
+            {isGlobalAdmin ? (
+              <span style={{ marginLeft: 8, opacity: 0.85 }}>· 🌍 Global admin</span>
+            ) : null}
           </div>
 
           <div style={{ opacity: 0.75, fontSize: 12, marginTop: 4 }}>
-            Session: <b>{sessionInfo.email || "—"}</b> · <span>{shortUuid(sessionInfo.id)}</span>
+            Session: <b>{sessionInfo.email || "—"}</b> ·{" "}
+            <span>{shortUuid(sessionInfo.id)}</span>
           </div>
 
           <div style={{ opacity: 0.7, fontSize: 12, marginTop: 2 }}>
@@ -301,9 +427,89 @@ export default function Admin() {
         </div>
       </div>
 
-      {!isAdmin && (
+      {/* Sites (optionnel) */}
+      <div style={{ marginTop: 14, padding: 12, border: "1px solid #333", borderRadius: 10 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 800 }}>Site cible (Admin):</div>
+
+          {isGlobalAdmin && sites.length > 0 ? (
+            <>
+              <select
+                value={targetSiteLabel}
+                onChange={(e) => setAdminSite(String(e.target.value || "").trim().toLowerCase())}
+              >
+                {sites.map((s) => {
+                  const code = String(s.site_code || s.code || "").trim().toLowerCase();
+                  const name = String(s.name || "").trim();
+                  return (
+                    <option key={code} value={code}>
+                      {code}
+                      {name ? ` — ${name}` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+
+              <button type="button" onClick={loadMembers} disabled={membersLoading}>
+                {membersLoading ? "..." : "Voir membres"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSiteCode?.(targetSiteLabel)}
+                disabled={!targetSiteLabel}
+                title="Mettre ce site comme site de l’app (Setup/Cockpit)"
+              >
+                Utiliser dans l’app
+              </button>
+            </>
+          ) : (
+            <>
+              <span style={{ opacity: 0.8 }}>
+                <b>{targetSiteLabel}</b>
+              </span>
+              <button type="button" onClick={loadSites} disabled={sitesLoading}>
+                {sitesLoading ? "..." : "Tester list-sites"}
+              </button>
+              <span style={{ opacity: 0.6, fontSize: 12 }}>
+                {isGlobalAdmin
+                  ? "Aucun site renvoyé."
+                  : "Mode mono-site (list-sites indisponible ou non autorisé)."}
+              </span>
+            </>
+          )}
+        </div>
+
+        {isGlobalAdmin ? (
+          <form onSubmit={createSite} style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            <div style={{ fontWeight: 800 }}>Créer un site</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 140px", gap: 10 }}>
+              <input
+                value={siteForm.code}
+                onChange={(e) => setSiteForm((s) => ({ ...s, code: e.target.value }))}
+                placeholder="Code site (ex: melun)"
+              />
+              <input
+                value={siteForm.name}
+                onChange={(e) => setSiteForm((s) => ({ ...s, name: e.target.value }))}
+                placeholder="Nom (optionnel) (ex: Melun)"
+              />
+              <button type="submit" disabled={siteCreating}>
+                {siteCreating ? "..." : "Créer"}
+              </button>
+            </div>
+            <div style={{ opacity: 0.65, fontSize: 12 }}>
+              (Si l’endpoint <code>/api/admin/site-create</code> n’existe pas encore, cette partie ne
+              marchera pas.)
+            </div>
+          </form>
+        ) : null}
+      </div>
+
+      {!canManage && (
         <div style={{ marginTop: 14, padding: 12, border: "1px solid #444", borderRadius: 8 }}>
-          <b>Accès limité.</b> Tu dois être <b>admin</b> du site pour créer/assigner/modifier des membres.
+          <b>Accès limité.</b> Tu dois être <b>admin</b> (ou global admin) pour créer/assigner/modifier
+          des membres.
         </div>
       )}
 
@@ -314,11 +520,20 @@ export default function Admin() {
           padding: 14,
           border: "1px solid #333",
           borderRadius: 10,
-          opacity: isAdmin ? 1 : 0.6,
-          pointerEvents: isAdmin ? "auto" : "none",
+          opacity: canManage ? 1 : 0.6,
+          pointerEvents: canManage ? "auto" : "none",
         }}
       >
         <h3 style={{ marginTop: 0 }}>Créer / mettre à jour un membre (CODE + PIN)</h3>
+
+        <div style={{ opacity: 0.75, fontSize: 12, marginBottom: 10 }}>
+          Site cible: <b>{targetSiteLabel}</b>
+          {normalizedSite && targetSiteLabel !== normalizedSite ? (
+            <span style={{ marginLeft: 8, opacity: 0.8 }}>
+              (⚠️ différent du site de l’app)
+            </span>
+          ) : null}
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <label>
@@ -402,7 +617,7 @@ export default function Admin() {
         </div>
 
         <div style={{ opacity: 0.75, fontSize: 12, marginTop: 8 }}>
-          Admins: <b>{adminCount}</b>
+          Site: <b>{targetSiteLabel}</b> · Admins: <b>{adminCount}</b>
         </div>
 
         <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
@@ -441,9 +656,9 @@ export default function Admin() {
                     <span style={{ fontSize: 12, opacity: 0.7 }}>Rôle</span>
                     <select
                       value={role}
-                      disabled={!isAdmin || rowBusy}
+                      disabled={!canManage || rowBusy}
                       onChange={(e) => updateRole(uid, e.target.value)}
-                      title={!isAdmin ? "Accès admin requis" : ""}
+                      title={!canManage ? "Accès admin requis" : ""}
                     >
                       <option value="user">user</option>
                       <option value="manager">manager</option>
@@ -460,7 +675,7 @@ export default function Admin() {
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
                   <button
                     type="button"
-                    disabled={!isAdmin || rowBusy}
+                    disabled={!canManage || rowBusy}
                     onClick={() => resetPin(uid, m.member_code)}
                   >
                     {actionLoading[uid] === "pin" ? "..." : "Reset PIN"}
@@ -468,7 +683,7 @@ export default function Admin() {
 
                   <button
                     type="button"
-                    disabled={!isAdmin || rowBusy || uid === sessionInfo.id || isLastAdmin(uid)}
+                    disabled={!canManage || rowBusy || uid === sessionInfo.id || isLastAdmin(uid)}
                     onClick={() => removeMember(uid, m.member_code)}
                     style={{ borderColor: "#7a2a2a" }}
                     title={uid === sessionInfo.id ? "Impossible de te supprimer toi-même" : ""}

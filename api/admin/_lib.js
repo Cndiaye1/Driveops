@@ -104,6 +104,53 @@ async function requireUser(req, sb) {
 }
 
 /**
+ * ✅ Global admin (voit tous les sites)
+ * - table attendue: public.drive_global_admins(user_id uuid pk)
+ * - SAFE: si la table n’existe pas encore => retourne false (ne casse pas tes endpoints)
+ */
+async function isGlobalAdmin(sb, userId) {
+  if (!userId) return false;
+  try {
+    const { data, error } = await sb
+      .from("drive_global_admins")
+      .select("user_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      const msg = String(error.message || "");
+      // table pas créée => pas de crash
+      if (msg.toLowerCase().includes("does not exist")) return false;
+      throw error;
+    }
+    return !!data?.user_id;
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (msg.toLowerCase().includes("does not exist")) return false;
+    throw Object.assign(new Error(msg), { status: 500 });
+  }
+}
+
+/**
+ * ✅ Site admin
+ */
+async function isSiteAdmin(sb, userId, siteCode) {
+  const site_code = normalizeSiteCode(siteCode);
+  if (!userId || !site_code) return false;
+
+  const { data, error } = await sb
+    .from("drive_site_members")
+    .select("role")
+    .eq("site_code", site_code)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw Object.assign(new Error(error.message), { status: 500 });
+
+  return String(data?.role || "").trim().toLowerCase() === "admin";
+}
+
+/**
  * ✅ Admin site OU bootstrap :
  * - Si caller est déjà admin => ok
  * - Sinon, si aucun admin n’existe sur ce site => on bootstrap le caller admin
@@ -137,10 +184,12 @@ async function ensureAdminOrBootstrap(sb, siteCode, callerId) {
 
   if (!anyAdmin?.user_id) {
     const member_code = `admin_${String(callerId).slice(0, 6)}`;
+
     const { error: upErr } = await sb.from("drive_site_members").upsert(
       { site_code, user_id: callerId, role: "admin", member_code },
       { onConflict: "site_code,user_id" }
     );
+
     if (upErr) throw Object.assign(new Error(upErr.message), { status: 500 });
     return;
   }
@@ -156,5 +205,9 @@ module.exports = {
   normalizeSiteCode,
   supabaseAdmin,
   requireUser,
+
+  // ✅ ajoutés (pour tes endpoints existants)
+  isGlobalAdmin,
+  isSiteAdmin,
   ensureAdminOrBootstrap,
 };
