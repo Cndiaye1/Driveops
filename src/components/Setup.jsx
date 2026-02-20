@@ -1,8 +1,21 @@
 // src/components/Setup.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
-import { getFirstBlockId } from "../utils/blocks";
 import { supabase } from "../services/supabaseClient";
+
+// ✅ même logique que le store (1er bloc = minutes du 1er horaire, sinon "0")
+function timeToMinutes(hhmm) {
+  const [h, m] = String(hhmm || "").split(":").map(Number);
+  return (Number(h) || 0) * 60 + (Number(m) || 0);
+}
+function getFirstBlockIdLocal(horaires) {
+  const hs = Array.isArray(horaires) ? horaires : [];
+  if (hs.length < 2) return "0";
+  const startMin = timeToMinutes(hs[0]);
+  const endMin = timeToMinutes(hs[hs.length - 1]);
+  if (!Number.isFinite(startMin) || !Number.isFinite(endMin) || endMin <= startMin) return "0";
+  return String(startMin);
+}
 
 export default function Setup({ adminState } = {}) {
   const {
@@ -29,7 +42,7 @@ export default function Setup({ adminState } = {}) {
 
     postes,
     horaires,
-    rotationMinutes,
+    rotationMinutes, // (gardé: utilisé dans UI/consistance, mais pas nécessaire pour le 1er bloc)
     currentBlockId,
     assignments,
     setInitialAssignment,
@@ -57,7 +70,7 @@ export default function Setup({ adminState } = {}) {
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
-  // ✅ input site: draft + commit
+  // ✅ input site: draft + commit (évite setSiteCode à chaque frappe)
   const [siteDraft, setSiteDraft] = useState((siteCode || "").toUpperCase());
   useEffect(() => {
     setSiteDraft((siteCode || "").toUpperCase());
@@ -70,18 +83,24 @@ export default function Setup({ adminState } = {}) {
   const normUpper = (s) => String(s || "").trim().toUpperCase();
   const normLower = (s) => String(s || "").trim().toLowerCase();
 
-  // ✅ Au montage : charge la session (remote) si besoin
+  // ✅ Au montage : charge la session remote si besoin
   useEffect(() => {
     ensureSessionLoaded?.();
+
+    // ✅ si quelqu’un arrive sur /admin (ancienne nav), on remet / sans reload
+    try {
+      if (typeof window !== "undefined") {
+        const p = window.location?.pathname || "/";
+        if (p.startsWith("/admin")) window.history.replaceState({}, "", "/");
+      }
+    } catch {}
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const isServiceRunning = !!(dayStartedAt || serviceStartedAt);
 
-  const setupBlockId = useMemo(
-    () => getFirstBlockId(horaires || [], rotationMinutes),
-    [horaires, rotationMinutes]
-  );
+  const setupBlockId = useMemo(() => getFirstBlockIdLocal(horaires), [horaires]);
 
   const effectiveBlockId = useMemo(() => {
     if (!isServiceRunning) return setupBlockId;
@@ -132,37 +151,16 @@ export default function Setup({ adminState } = {}) {
     }
   }
 
-  // ✅ NAV helpers : important sur Vercel si tu es sur /admin (URL) mais app en screen-based
-  function pushUrl(pathname) {
-    try {
-      if (typeof window !== "undefined" && window.location.pathname !== pathname) {
-        window.history.pushState({}, "", pathname);
-      }
-    } catch {}
-  }
-
-  function goToAdmin() {
-    goAdmin?.();
-    // optionnel : URL /admin (sans reload)
-    pushUrl("/admin");
-  }
-
-  function goToCockpitSafe() {
-    goCockpit?.();
-    // cockpit/setup sont sur la racine dans ton app
-    pushUrl("/");
-  }
-
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
     } catch (e) {
       console.error(e);
     } finally {
+      // remet l’app proprement même si le listener auth tarde
       resetAuthState?.();
-      // on revient proprement sur /
       try {
-        window.location.assign("/");
+        if (typeof window !== "undefined") window.history.replaceState({}, "", "/");
       } catch {}
     }
   }
@@ -214,14 +212,14 @@ export default function Setup({ adminState } = {}) {
                 🛠 Admin…
               </button>
             ) : isAdmin ? (
-              <button className="btn ghost" onClick={goToAdmin} title="Aller sur la page Admin">
+              <button className="btn ghost" onClick={goAdmin} title="Aller sur la page Admin">
                 🛠 Admin
               </button>
             ) : null}
 
             {/* ✅ cockpit visible si service en cours */}
             {isServiceRunning && (
-              <button className="btn ghost" onClick={goToCockpitSafe} title="Retour cockpit">
+              <button className="btn ghost" onClick={goCockpit} title="Retour cockpit">
                 🧭 Cockpit
               </button>
             )}
@@ -375,10 +373,7 @@ export default function Setup({ adminState } = {}) {
                   return (
                     <div key={nom} className="placementRow">
                       <div className="placementName">{nom}</div>
-                      <select
-                        value={blockAssignments[key] || ""}
-                        onChange={(e) => setInitialAssignment(nom, e.target.value)}
-                      >
+                      <select value={blockAssignments[key] || ""} onChange={(e) => setInitialAssignment(nom, e.target.value)}>
                         <option value="">-- Choisir poste --</option>
                         {postes.map((p) => (
                           <option key={p} value={p}>
