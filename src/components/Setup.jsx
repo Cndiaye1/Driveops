@@ -1,21 +1,8 @@
 // src/components/Setup.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
+import { getFirstBlockId } from "../utils/blocks";
 import { supabase } from "../services/supabaseClient";
-
-// ✅ même logique que le store (1er bloc = minutes du 1er horaire, sinon "0")
-function timeToMinutes(hhmm) {
-  const [h, m] = String(hhmm || "").split(":").map(Number);
-  return (Number(h) || 0) * 60 + (Number(m) || 0);
-}
-function getFirstBlockIdLocal(horaires) {
-  const hs = Array.isArray(horaires) ? horaires : [];
-  if (hs.length < 2) return "0";
-  const startMin = timeToMinutes(hs[0]);
-  const endMin = timeToMinutes(hs[hs.length - 1]);
-  if (!Number.isFinite(startMin) || !Number.isFinite(endMin) || endMin <= startMin) return "0";
-  return String(startMin);
-}
 
 export default function Setup({ adminState } = {}) {
   const {
@@ -25,6 +12,10 @@ export default function Setup({ adminState } = {}) {
     apiStatus,
     apiError,
     ensureSessionLoaded,
+
+    // ✅ config site status (DB)
+    cfgStatus,
+    cfgError,
 
     setupStep,
     setSetupStep,
@@ -42,7 +33,7 @@ export default function Setup({ adminState } = {}) {
 
     postes,
     horaires,
-    rotationMinutes, // (gardé: utilisé dans UI/consistance, mais pas nécessaire pour le 1er bloc)
+    rotationMinutes,
     currentBlockId,
     assignments,
     setInitialAssignment,
@@ -70,7 +61,7 @@ export default function Setup({ adminState } = {}) {
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
-  // ✅ input site: draft + commit (évite setSiteCode à chaque frappe)
+  // ✅ input site: draft + commit
   const [siteDraft, setSiteDraft] = useState((siteCode || "").toUpperCase());
   useEffect(() => {
     setSiteDraft((siteCode || "").toUpperCase());
@@ -83,24 +74,22 @@ export default function Setup({ adminState } = {}) {
   const normUpper = (s) => String(s || "").trim().toUpperCase();
   const normLower = (s) => String(s || "").trim().toLowerCase();
 
-  // ✅ Au montage : charge la session remote si besoin
+  // ✅ Config prête ?
+  const cfgReady = cfgStatus === "loaded";
+  const canEditConfig = isAdmin && cfgReady; // ✅ OPTION A
+
+  // ✅ Au montage : charge config site + session day
   useEffect(() => {
     ensureSessionLoaded?.();
-
-    // ✅ si quelqu’un arrive sur /admin (ancienne nav), on remet / sans reload
-    try {
-      if (typeof window !== "undefined") {
-        const p = window.location?.pathname || "/";
-        if (p.startsWith("/admin")) window.history.replaceState({}, "", "/");
-      }
-    } catch {}
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const isServiceRunning = !!(dayStartedAt || serviceStartedAt);
 
-  const setupBlockId = useMemo(() => getFirstBlockIdLocal(horaires), [horaires]);
+  const setupBlockId = useMemo(
+    () => getFirstBlockId(horaires || [], rotationMinutes),
+    [horaires, rotationMinutes]
+  );
 
   const effectiveBlockId = useMemo(() => {
     if (!isServiceRunning) return setupBlockId;
@@ -123,6 +112,7 @@ export default function Setup({ adminState } = {}) {
   const canStart = hasCoordinator && hasStaff && allHavePoste;
 
   function addPrep() {
+    if (!canEditConfig) return;
     const v = newPrep.trim();
     if (!v) return;
     addPreparateurToList(v);
@@ -130,6 +120,7 @@ export default function Setup({ adminState } = {}) {
   }
 
   function addCoordo() {
+    if (!canEditConfig) return;
     const v = newCoordo.trim();
     if (!v) return;
     addCoordoToList(v);
@@ -145,10 +136,29 @@ export default function Setup({ adminState } = {}) {
     if (next === cur) return;
 
     try {
-      await setSiteCode(next); // async (hydrate remote)
+      await setSiteCode(next); // async hydrate config + session
     } catch (e) {
       console.error("[setSiteCode]", e);
     }
+  }
+
+  // ✅ NAV helpers : important sur Vercel si tu es sur /admin (URL) mais app en screen-based
+  function pushUrl(pathname) {
+    try {
+      if (typeof window !== "undefined" && window.location.pathname !== pathname) {
+        window.history.pushState({}, "", pathname);
+      }
+    } catch {}
+  }
+
+  function goToAdmin() {
+    goAdmin?.();
+    pushUrl("/admin");
+  }
+
+  function goToCockpitSafe() {
+    goCockpit?.();
+    pushUrl("/");
   }
 
   async function handleLogout() {
@@ -157,13 +167,21 @@ export default function Setup({ adminState } = {}) {
     } catch (e) {
       console.error(e);
     } finally {
-      // remet l’app proprement même si le listener auth tarde
       resetAuthState?.();
       try {
-        if (typeof window !== "undefined") window.history.replaceState({}, "", "/");
+        window.location.assign("/");
       } catch {}
     }
   }
+
+  const configStatusLabel = useMemo(() => {
+    if (cfgStatus === "loaded") return "OK";
+    if (cfgStatus === "loading") return "Chargement…";
+    if (cfgStatus === "saving") return "Sauvegarde…";
+    if (cfgStatus === "offline") return "Offline";
+    if (cfgStatus === "error") return "Erreur";
+    return "—";
+  }, [cfgStatus]);
 
   return (
     <div className="page">
@@ -212,14 +230,14 @@ export default function Setup({ adminState } = {}) {
                 🛠 Admin…
               </button>
             ) : isAdmin ? (
-              <button className="btn ghost" onClick={goAdmin} title="Aller sur la page Admin">
+              <button className="btn ghost" onClick={goToAdmin} title="Aller sur la page Admin">
                 🛠 Admin
               </button>
             ) : null}
 
             {/* ✅ cockpit visible si service en cours */}
             {isServiceRunning && (
-              <button className="btn ghost" onClick={goCockpit} title="Retour cockpit">
+              <button className="btn ghost" onClick={goToCockpitSafe} title="Retour cockpit">
                 🧭 Cockpit
               </button>
             )}
@@ -228,15 +246,36 @@ export default function Setup({ adminState } = {}) {
               🚪 Déconnexion
             </button>
 
-            <div className="muted small" style={{ minWidth: 260 }}>
-              API: <b>{apiStatus}</b>
+            <div className="muted small" style={{ minWidth: 280 }}>
+              API session: <b>{apiStatus}</b>
               {apiError ? <span style={{ opacity: 0.85 }}> — {apiError}</span> : null}
+              <div style={{ opacity: 0.85, marginTop: 2 }}>
+                Config site: <b>{configStatusLabel}</b>
+                {cfgError ? <span style={{ opacity: 0.85 }}> — {cfgError}</span> : null}
+              </div>
               <div style={{ opacity: 0.8, marginTop: 2 }}>
                 Rôle site: <b>{role || "—"}</b>
+                {!isAdmin ? (
+                  <span style={{ marginLeft: 8, opacity: 0.8 }}>· édition config désactivée</span>
+                ) : !cfgReady ? (
+                  <span style={{ marginLeft: 8, opacity: 0.8 }}>· attente chargement config</span>
+                ) : null}
               </div>
             </div>
           </div>
         </div>
+
+        {/* ✅ Message si config pas prête */}
+        {!cfgReady && (
+          <div className="card callout warn" style={{ marginTop: 12 }}>
+            ⏳ <b>Chargement de la configuration du site…</b>
+            <div className="muted small" style={{ marginTop: 6, opacity: 0.85 }}>
+              Tant que la config n’est pas chargée, les listes peuvent afficher des valeurs par défaut.
+              <br />
+              {isAdmin ? "L’édition est temporairement bloquée." : "Tu peux quand même sélectionner l’équipe du jour."}
+            </div>
+          </div>
+        )}
 
         <div className="wizardTabs">
           <button className={`tab ${setupStep === 1 ? "active" : ""}`} onClick={() => setSetupStep(1)}>
@@ -269,13 +308,15 @@ export default function Setup({ adminState } = {}) {
                 </select>
               </div>
 
+              {/* ✅ Ajout coordo : admin only + cfgReady */}
               <div className="row">
                 <input
                   value={newCoordo}
                   onChange={(e) => setNewCoordo(e.target.value)}
-                  placeholder="Ajouter coordinateur (ex: AMINE)"
+                  placeholder={isAdmin ? "Ajouter coordinateur (ex: AMINE)" : "Ajout réservé admin"}
+                  disabled={!canEditConfig}
                 />
-                <button className="btn" onClick={addCoordo}>
+                <button className="btn" onClick={addCoordo} disabled={!canEditConfig}>
                   + Ajouter
                 </button>
               </div>
@@ -286,7 +327,13 @@ export default function Setup({ adminState } = {}) {
                     <div className="checkRow">
                       <span className="name">{c}</span>
                     </div>
-                    <button className="btn ghost mini" onClick={() => removeCoordoFromList(c)} title="Supprimer">
+
+                    <button
+                      className="btn ghost mini"
+                      onClick={() => removeCoordoFromList(c)}
+                      title={!canEditConfig ? "Réservé admin (config non chargée ou non admin)" : "Supprimer"}
+                      disabled={!canEditConfig}
+                    >
                       ✕
                     </button>
                   </div>
@@ -307,7 +354,12 @@ export default function Setup({ adminState } = {}) {
                         <span className="name">{p}</span>
                       </label>
 
-                      <button className="btn ghost mini" onClick={() => removePreparateurFromList(p)} title="Supprimer">
+                      <button
+                        className="btn ghost mini"
+                        onClick={() => removePreparateurFromList(p)}
+                        title={!canEditConfig ? "Réservé admin (config non chargée ou non admin)" : "Supprimer"}
+                        disabled={!canEditConfig}
+                      >
                         ✕
                       </button>
                     </div>
@@ -315,13 +367,15 @@ export default function Setup({ adminState } = {}) {
                 })}
               </div>
 
+              {/* ✅ Ajout prépa : admin only + cfgReady */}
               <div className="row">
                 <input
                   value={newPrep}
                   onChange={(e) => setNewPrep(e.target.value)}
-                  placeholder="Ajouter préparateur (ex: SARAH)"
+                  placeholder={isAdmin ? "Ajouter préparateur (ex: SARAH)" : "Ajout réservé admin"}
+                  disabled={!canEditConfig}
                 />
-                <button className="btn" onClick={addPrep}>
+                <button className="btn" onClick={addPrep} disabled={!canEditConfig}>
                   + Ajouter
                 </button>
               </div>
@@ -335,7 +389,13 @@ export default function Setup({ adminState } = {}) {
                 <span className="muted" style={{ minWidth: 130 }}>
                   Taille de vague
                 </span>
-                <select value={pauseWaveSize || 1} onChange={(e) => setPauseWaveSize(Number(e.target.value))}>
+                <select
+                  value={pauseWaveSize || 1}
+                  onChange={(e) => setPauseWaveSize(Number(e.target.value))}
+                  // ✅ taille de vague = config site => admin only + cfgReady
+                  disabled={!canEditConfig}
+                  title={!canEditConfig ? "Réservé admin (config non chargée ou non admin)" : "Modifier"}
+                >
                   {Array.from({ length: waveMax }, (_, i) => i + 1).map((v) => (
                     <option key={v} value={v}>
                       {v}
@@ -343,6 +403,12 @@ export default function Setup({ adminState } = {}) {
                   ))}
                 </select>
               </div>
+
+              {!isAdmin && (
+                <div className="muted small" style={{ marginTop: 8, opacity: 0.8 }}>
+                  🔒 Seul un admin peut modifier la taille de vague (configuration du site).
+                </div>
+              )}
             </div>
 
             <div className="row">
@@ -373,7 +439,10 @@ export default function Setup({ adminState } = {}) {
                   return (
                     <div key={nom} className="placementRow">
                       <div className="placementName">{nom}</div>
-                      <select value={blockAssignments[key] || ""} onChange={(e) => setInitialAssignment(nom, e.target.value)}>
+                      <select
+                        value={blockAssignments[key] || ""}
+                        onChange={(e) => setInitialAssignment(nom, e.target.value)}
+                      >
                         <option value="">-- Choisir poste --</option>
                         {postes.map((p) => (
                           <option key={p} value={p}>
