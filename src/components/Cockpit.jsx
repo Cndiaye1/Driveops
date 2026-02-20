@@ -9,11 +9,11 @@ const POSTE_META = {
   PGC: { icon: "📦", label: "PGC" },
   FS: { icon: "🏷️", label: "FS" },
   LIV: { icon: "🚚", label: "LIV" },
-  MES: { icon: "📥", label: "MES" },      // Mise en stock
-  LAD: { icon: "🏠", label: "LAD" },      // Livraison à domicile
+  MES: { icon: "📥", label: "MES" }, // Mise en stock
+  LAD: { icon: "🏠", label: "LAD" }, // Livraison à domicile
   "FLEG/SURG": { icon: "🥬🧊", label: "FLEG/SURG" },
-  RE: { icon: "♻️", label: "RE" },        // Réceptions / retours (selon ton usage)
-  NET: { icon: "🧽", label: "NET" },      // Nettoyage
+  RE: { icon: "♻️", label: "RE" }, // Réceptions / retours (selon ton usage)
+  NET: { icon: "🧽", label: "NET" }, // Nettoyage
   PAUSE: { icon: "☕", label: "PAUSE" },
 };
 
@@ -87,6 +87,9 @@ export default function Cockpit() {
     fillMissingAssignmentsFromPrevBlock,
   } = useDriveStore();
 
+  // ✅ IMPORTANT: tick() met à jour rotationImminent/rotationLocked dans le store
+  const tick = useDriveStore((s) => s.tick);
+
   const [clock, setClock] = useState(formatClock());
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -110,6 +113,21 @@ export default function Cockpit() {
     const t1 = setInterval(() => setClock(formatClock()), 1000);
     return () => clearInterval(t1);
   }, []);
+
+  // ✅ FAIT TOURNER LE TICK STORE (sinon plus d’alerte rotation)
+  useEffect(() => {
+    try {
+      tick?.(); // 1er calcul immédiat
+    } catch {}
+
+    const id = setInterval(() => {
+      try {
+        tick?.();
+      } catch {}
+    }, 10_000); // 10s = suffisant et léger (mets 5_000 si tu veux plus réactif)
+
+    return () => clearInterval(id);
+  }, [tick]);
 
   useEffect(() => {
     document.body.classList.toggle("wall", !!wallMode);
@@ -141,10 +159,7 @@ export default function Cockpit() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const blocks = useMemo(
-    () => buildBlocks(horaires || [], rotationMinutes),
-    [horaires, rotationMinutes]
-  );
+  const blocks = useMemo(() => buildBlocks(horaires || [], rotationMinutes), [horaires, rotationMinutes]);
 
   const currentBlock = useMemo(() => {
     return blocks.find((b) => b.id === String(currentBlockId)) || null;
@@ -275,9 +290,7 @@ export default function Cockpit() {
 
   const applyBlockModal = useCallback(() => {
     const bid = String(blockDraft ?? "");
-    const ok = window.confirm(
-      "Forcer ce bloc manuellement ?\n\n⚠️ Cela désactive la sync sur l’heure du PC."
-    );
+    const ok = window.confirm("Forcer ce bloc manuellement ?\n\n⚠️ Cela désactive la sync sur l’heure du PC.");
     if (!ok) return;
 
     setCurrentBlockManual(bid);
@@ -300,20 +313,9 @@ export default function Cockpit() {
       {blockModalOpen && (
         <div className="modalOverlay" onClick={() => setBlockModalOpen(false)}>
           <div className="modalCard card" onClick={(e) => e.stopPropagation()}>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 10,
-                alignItems: "center",
-              }}
-            >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
               <h2 style={{ margin: 0 }}>⏱️ Forcer un bloc</h2>
-              <button
-                className="btn ghost"
-                onClick={() => setBlockModalOpen(false)}
-                title="Fermer"
-              >
+              <button className="btn ghost" onClick={() => setBlockModalOpen(false)} title="Fermer">
                 ✕
               </button>
             </div>
@@ -368,8 +370,7 @@ export default function Cockpit() {
           </div>
 
           <div className="muted small">
-            Pause obligatoire après <b>{pauseAfterMinutes} min</b> — Durée pause :{" "}
-            <b>{pauseDurationMinutes || 30} min</b>
+            Pause obligatoire après <b>{pauseAfterMinutes} min</b> — Durée pause : <b>{pauseDurationMinutes || 30} min</b>
           </div>
         </div>
 
@@ -535,9 +536,7 @@ export default function Cockpit() {
               <button
                 className="btn ghost"
                 onClick={() => {
-                  const ok = window.confirm(
-                    "Retourner au poste précédent tous ceux dont la pause est terminée ?"
-                  );
+                  const ok = window.confirm("Retourner au poste précédent tous ceux dont la pause est terminée ?");
                   if (!ok) return;
                   returnAllEndedPausesCurrentBlock();
                 }}
@@ -597,14 +596,13 @@ export default function Cockpit() {
                     onChange={(e) => setPauseWaveSize(Number(e.target.value))}
                     title="Nombre de personnes max envoyées en pause en même temps"
                   >
-                    {Array.from(
-                      { length: Math.max(1, Math.min((dayStaff || []).length, 6)) },
-                      (_, i) => i + 1
-                    ).map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
+                    {Array.from({ length: Math.max(1, Math.min((dayStaff || []).length, 6)) }, (_, i) => i + 1).map(
+                      (v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      )
+                    )}
                   </select>
                 </div>
 
@@ -659,17 +657,13 @@ export default function Cockpit() {
           <h2>Cartes préparateurs (bloc en cours : {blockLabel})</h2>
           <p className="muted">
             0 → {rotationMinutes - rotationWarnMinutes} min : Poste •{" "}
-            {rotationMinutes - rotationWarnMinutes} → {rotationMinutes} : Imminente •{" "}
-            ≥ {rotationMinutes} : Rotation obligatoire
+            {rotationMinutes - rotationWarnMinutes} → {rotationMinutes} : Imminente • ≥ {rotationMinutes} : Rotation
+            obligatoire
           </p>
 
           <div className="row noPrint" style={{ marginTop: 10 }}>
             <label className="pill" style={{ cursor: "pointer", userSelect: "none" }}>
-              <input
-                type="checkbox"
-                checked={onlyPaused}
-                onChange={(e) => setOnlyPaused(e.target.checked)}
-              />
+              <input type="checkbox" checked={onlyPaused} onChange={(e) => setOnlyPaused(e.target.checked)} />
               <span style={{ marginLeft: 8 }}>Voir seulement ceux en pause</span>
             </label>
 
@@ -694,13 +688,7 @@ export default function Cockpit() {
             const justReturned = (returnAlertUntil?.[nom] || 0) > Date.now();
             const isSkipped = !!currentSkipMap?.[nom];
 
-            const cardState = rotationLocked
-              ? "danger"
-              : pauseDue || rotationImminent
-              ? "warn"
-              : poste && poste !== "PAUSE"
-              ? "info"
-              : "idle";
+            const cardState = rotationLocked ? "danger" : pauseDue || rotationImminent ? "warn" : poste && poste !== "PAUSE" ? "info" : "idle";
 
             return (
               <div key={nom} className={`cardItem ${cardState}`}>
@@ -748,16 +736,11 @@ export default function Cockpit() {
                     </div>
                   )}
 
-                  {!pauseDue &&
-                    !rotationLocked &&
-                    rotationImminent &&
-                    poste &&
-                    poste !== "PAUSE" &&
-                    !isSkipped && (
-                      <div className="cardAlert">
-                        <span className="badge warn">⚠️ Rotation imminente</span>
-                      </div>
-                    )}
+                  {!pauseDue && !rotationLocked && rotationImminent && poste && poste !== "PAUSE" && !isSkipped && (
+                    <div className="cardAlert">
+                      <span className="badge warn">⚠️ Rotation imminente</span>
+                    </div>
+                  )}
                 </div>
 
                 {canEdit && (
@@ -797,10 +780,7 @@ export default function Cockpit() {
 
                     {/* ✅ Skip rotation */}
                     {showSkipUI && poste && poste !== "PAUSE" && (
-                      <label
-                        className="skipRow"
-                        style={{ marginTop: 10, cursor: "pointer", userSelect: "none" }}
-                      >
+                      <label className="skipRow" style={{ marginTop: 10, cursor: "pointer", userSelect: "none" }}>
                         <input
                           type="checkbox"
                           checked={!!isSkipped}
@@ -816,9 +796,7 @@ export default function Cockpit() {
           })}
         </div>
 
-        {!wallMode && (
-          <div className="miniNote muted noPrint">Astuce : en urgence tu peux changer un poste à tout moment.</div>
-        )}
+        {!wallMode && <div className="miniNote muted noPrint">Astuce : en urgence tu peux changer un poste à tout moment.</div>}
       </div>
     </div>
   );
