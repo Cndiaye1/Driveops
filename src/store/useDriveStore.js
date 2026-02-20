@@ -1,3 +1,4 @@
+// src/store/useDriveStore.js
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { supabase } from "../services/supabaseClient";
@@ -25,6 +26,7 @@ function normalizeBlockId(blockId, horaires) {
   const raw = String(blockId ?? "");
   const n = Number(raw);
   const hs = Array.isArray(horaires) ? horaires : [];
+
   if (!Number.isFinite(n)) return raw;
 
   // legacy: id = index dans horaires
@@ -45,6 +47,7 @@ function buildBlocks(horaires, rotationMinutes) {
 
   const step = Math.max(1, Math.floor(Number(rotationMinutes) || 0));
   const blocks = [];
+
   for (let t = startMin; t < endMin; t += step) {
     const bStart = t;
     const bEnd = Math.min(t + step, endMin);
@@ -95,7 +98,7 @@ function blockStartTimestamp(dayDate, blockStartMin, useSystemDate) {
 }
 
 // -----------------------------------------------------
-// Remote (Supabase)
+// Remote (Supabase) : SESSIONS (par jour)
 const TABLE = "drive_sessions";
 
 function sessionKey(siteCode, dayDate) {
@@ -124,29 +127,17 @@ function prettifyApiError(msgRaw) {
 }
 
 /**
- * ✅ IMPORTANT
- * On n’envoie plus dans Supabase les champs UI (screen/setupStep/wall/print),
- * sinon un device peut “forcer” les autres à revenir sur Admin/Cockpit etc.
+ * ✅ IMPORTANT (NEW)
+ * - Les référentiels + règles (prépas/coordos/postes/horaires/rotation/pause…) viennent maintenant de drive_site_config (par site).
+ * - drive_sessions (par jour) ne garde que la journée (coordinator/dayStaff/assignments/runtime…)
  */
-const REMOTE_ALLOWED_KEYS = [
-  // référentiels & règles
-  "preparateursList",
-  "coordosList",
-  "postes",
-  "horaires",
-  "rotationMinutes",
-  "rotationWarnMinutes",
-  "pauseAfterMinutes",
-  "pauseDurationMinutes",
-  "pauseWaveSize",
-  "syncBlocksToSystemClock",
-
-  // config journée
+const REMOTE_ALLOWED_KEYS_SESSION = [
+  // config journée (par jour)
   "dayDate",
   "coordinator",
   "dayStaff",
 
-  // runtime service
+  // runtime service (par jour)
   "dayStartedAt",
   "blockStartedAt",
   "serviceStartedAt",
@@ -154,7 +145,7 @@ const REMOTE_ALLOWED_KEYS = [
   "rotationImminent",
   "rotationLocked",
 
-  // data métier
+  // data métier (par jour)
   "assignments",
   "pauseTakenAt",
   "skipRotation",
@@ -162,29 +153,29 @@ const REMOTE_ALLOWED_KEYS = [
   "returnAlertUntil",
 ];
 
-function serializeState(s) {
-  // ✅ on enregistre UNIQUEMENT les données métier (pas l’UI)
+function serializeSessionState(s) {
   const out = {};
-  for (const k of REMOTE_ALLOWED_KEYS) out[k] = s[k];
+  for (const k of REMOTE_ALLOWED_KEYS_SESSION) out[k] = s[k];
   return out;
 }
 
-function pickRemote(remoteJson) {
+function pickRemoteSession(remoteJson) {
   if (!remoteJson || typeof remoteJson !== "object") return null;
   if (isEmptyObject(remoteJson)) return null;
 
   const out = {};
-  for (const k of REMOTE_ALLOWED_KEYS) {
+  for (const k of REMOTE_ALLOWED_KEYS_SESSION) {
     if (remoteJson[k] !== undefined) out[k] = remoteJson[k];
   }
   return out;
 }
 
-function mergeRemoteIntoState(defaults, remoteJson) {
-  const safeRemote = pickRemote(remoteJson);
+function mergeRemoteSessionIntoState(defaults, remoteJson) {
+  const safeRemote = pickRemoteSession(remoteJson);
   if (!safeRemote) return defaults;
 
-  const horaires = safeRemote.horaires || defaults.horaires;
+  // ⚠️ horaires viennent du store (site config). On s’appuie dessus pour migrer les clés legacy.
+  const horaires = defaults.horaires;
 
   const migrateMapByBlock = (obj) => {
     const src = obj || {};
@@ -201,21 +192,113 @@ function mergeRemoteIntoState(defaults, remoteJson) {
     ...safeRemote,
   };
 
-  merged.horaires = horaires;
   merged.currentBlockId = normalizeBlockId(merged.currentBlockId || "0", horaires);
 
   merged.assignments = migrateMapByBlock(merged.assignments);
   merged.skipRotation = migrateMapByBlock(merged.skipRotation);
   merged.pausePrevPoste = migrateMapByBlock(merged.pausePrevPoste);
 
-  const staffLen = merged.dayStaff?.length || 1;
-  merged.pauseWaveSize = Math.max(1, Math.min(staffLen, Number(merged.pauseWaveSize) || 1));
-
   return merged;
 }
 
 // -----------------------------------------------------
+// Remote (API) : SITE CONFIG (par site)
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+
+function urlJoin(path) {
+  if (!API_BASE) return path; // same-origin
+  return `${API_BASE}${path}`;
+}
+
+async function getAccessToken() {
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.access_token || "";
+}
+
+function normalizeListUpper(arr) {
+  const out = [];
+  const set = new Set();
+  (arr || []).forEach((x) => {
+    const v = String(x || "").trim().toUpperCase();
+    if (!v) return;
+    if (set.has(v)) return;
+    set.add(v);
+    out.push(v);
+  });
+  return out;
+}
+
+function normalizeHours(arr) {
+  const out = [];
+  const set = new Set();
+  (arr || []).forEach((x) => {
+    const v = String(x || "").trim();
+    if (!/^\d{2}:\d{2}$/.test(v)) return;
+    if (set.has(v)) return;
+    set.add(v);
+    out.push(v);
+  });
+  return out;
+}
+
+function mapConfigRowToStore(cfg, fallback) {
+  if (!cfg) return null;
+
+  const next = {};
+
+  // arrays
+  if (cfg.preparateurs) next.preparateursList = normalizeListUpper(cfg.preparateurs);
+  if (cfg.coordos) next.coordosList = normalizeListUpper(cfg.coordos);
+  if (cfg.postes) next.postes = normalizeListUpper(cfg.postes);
+  if (cfg.horaires) {
+    const hrs = normalizeHours(cfg.horaires);
+    if (hrs.length >= 2) next.horaires = hrs;
+  }
+
+  // numbers/bools (snake_case -> store)
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+
+  if (cfg.rotation_minutes != null) next.rotationMinutes = num(cfg.rotation_minutes, fallback.rotationMinutes);
+  if (cfg.rotation_warn_minutes != null) next.rotationWarnMinutes = num(cfg.rotation_warn_minutes, fallback.rotationWarnMinutes);
+  if (cfg.pause_after_minutes != null) next.pauseAfterMinutes = num(cfg.pause_after_minutes, fallback.pauseAfterMinutes);
+  if (cfg.pause_duration_minutes != null) next.pauseDurationMinutes = num(cfg.pause_duration_minutes, fallback.pauseDurationMinutes);
+  if (cfg.pause_wave_size != null) next.pauseWaveSize = num(cfg.pause_wave_size, fallback.pauseWaveSize);
+  if (cfg.sync_blocks_to_system_clock != null) next.syncBlocksToSystemClock = !!cfg.sync_blocks_to_system_clock;
+
+  return next;
+}
+
+async function apiFetch(path, { method = "GET", body, siteCode } = {}) {
+  const token = await getAccessToken();
+  if (!token) throw new Error("Session invalide (token manquant). Reconnecte-toi.");
+
+  const r = await fetch(urlJoin(path), {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "X-Site-Code": siteCode || "",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const text = await r.text();
+  let j = {};
+  try {
+    j = text ? JSON.parse(text) : {};
+  } catch {
+    j = {};
+  }
+
+  if (!r.ok) {
+    throw new Error(j?.error || `Erreur API (${r.status})`);
+  }
+  return j;
+}
+
+// -----------------------------------------------------
 // Defaults
+// ✅ IMPORTANT: site_code = lowercase (DB/RLS/API alignés)
 const DEFAULT_SITE_CODE = String(import.meta.env.VITE_SITE_CODE || "melun").trim().toLowerCase();
 
 const defaultState = {
@@ -227,10 +310,14 @@ const defaultState = {
   wallMode: false,
   printMode: false,
 
+  // ✅ référentiels + règles (par site) — seront remplacés par drive_site_config dès que chargé
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
   postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
-  horaires: ["06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00"],
+  horaires: [
+    "06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00",
+    "16:00","17:00","18:00","19:00","20:00","21:00",
+  ],
 
   rotationMinutes: 120,
   rotationWarnMinutes: 10,
@@ -239,6 +326,7 @@ const defaultState = {
   pauseWaveSize: 1,
   syncBlocksToSystemClock: true,
 
+  // ✅ journée (par jour)
   dayDate: todayISO(),
   coordinator: "",
   dayStaff: [],
@@ -256,11 +344,16 @@ const defaultState = {
   pausePrevPoste: {},
   returnAlertUntil: {},
 
+  // statuses
   apiStatus: "idle", // idle|syncing|pulled|pushed|offline|error
   apiError: "",
 
+  cfgStatus: "idle", // idle|loading|loaded|saving|offline|error
+  cfgError: "",
+
   _sessionLoadedKey: null,
   _subscribedKey: null,
+  _cfgLoadedSite: null,
 
   _saving: false,
   _lastRemoteUpdatedAt: null,
@@ -269,14 +362,20 @@ const defaultState = {
 
   _pendingSave: false,
   _retryCount: 0,
+
+  _cfgSaving: false,
+  _cfgPendingSave: false,
+  _cfgRetryCount: 0,
+  _cfgLastWriteAt: 0,
+
   _hasHydrated: false,
 
-  // Auth / RBAC (local)
+  // ✅ Auth / RBAC (local)
   memberRole: null, // admin|manager|user|null
 };
 
 // -----------------------------------------------------
-// Hydration guard
+// Hydration guard (évite wipe au refresh)
 let _hydrated = false;
 let _resolveHydrated = null;
 const hydratedPromise = new Promise((res) => {
@@ -286,6 +385,7 @@ async function awaitHydrated() {
   if (_hydrated) return;
   await hydratedPromise;
 }
+
 // -----------------------------------------------------
 // Store (persist local + sync supabase)
 export const useDriveStore = create(
@@ -306,7 +406,7 @@ export const useDriveStore = create(
       const normalizeName = (n) => String(n || "").trim().toUpperCase();
       const normalizePoste = (p) => String(p || "").trim().toUpperCase();
 
-      // Remote: load + upsert
+      // Remote: load + upsert (drive_sessions)
       const loadSession = async (siteCode, dayDate) => {
         const { data, error } = await supabase
           .from(TABLE)
@@ -337,23 +437,23 @@ export const useDriveStore = create(
         return data;
       };
 
-      // ---------------- Autosave (debounce + offline queue)
-      let saveTimer = null;
-      let retryTimer = null;
+      // ---------------- Autosave (SESSION) debounce + offline retry
+      let sessionSaveTimer = null;
+      let sessionRetryTimer = null;
 
-      const scheduleRetry = () => {
+      const scheduleSessionRetry = () => {
         const st = get();
         if (!st._pendingSave) return;
 
         const ms = Math.min(20000, 1000 * Math.pow(2, Math.min(4, st._retryCount || 0)));
-        if (retryTimer) clearTimeout(retryTimer);
 
-        retryTimer = setTimeout(async () => {
-          await doSaveNow();
+        if (sessionRetryTimer) clearTimeout(sessionRetryTimer);
+        sessionRetryTimer = setTimeout(async () => {
+          await doSessionSaveNow();
         }, ms);
       };
 
-      const doSaveNow = async () => {
+      const doSessionSaveNow = async () => {
         await awaitHydrated();
 
         const st = get();
@@ -367,13 +467,13 @@ export const useDriveStore = create(
         try {
           if (typeof navigator !== "undefined" && navigator.onLine === false) {
             set({ apiStatus: "offline", _pendingSave: true, apiError: prettifyApiError("offline") });
-            scheduleRetry();
+            scheduleSessionRetry();
             return;
           }
 
           set({ _saving: true, _error: null, apiStatus: "syncing", apiError: "" });
 
-          const body = serializeState(get());
+          const body = serializeSessionState(get());
           await upsertSession(st.siteCode, st.dayDate, body);
 
           set({
@@ -386,6 +486,7 @@ export const useDriveStore = create(
           });
         } catch (e) {
           const msg = String(e?.message || e);
+
           const isNetwork =
             msg.toLowerCase().includes("fetch") ||
             msg.toLowerCase().includes("network") ||
@@ -400,7 +501,7 @@ export const useDriveStore = create(
               _pendingSave: true,
               _retryCount: (s._retryCount || 0) + 1,
             }));
-            scheduleRetry();
+            scheduleSessionRetry();
             return;
           }
 
@@ -414,22 +515,166 @@ export const useDriveStore = create(
         }
       };
 
-      const scheduleSave = () => {
-        if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(async () => {
-          await doSaveNow();
+      const scheduleSessionSave = () => {
+        if (sessionSaveTimer) clearTimeout(sessionSaveTimer);
+        sessionSaveTimer = setTimeout(async () => {
+          await doSessionSaveNow();
         }, 350);
       };
 
+      // ---------------- Autosave (SITE CONFIG) debounce + offline retry
+      let cfgSaveTimer = null;
+      let cfgRetryTimer = null;
+
+      const scheduleCfgRetry = () => {
+        const st = get();
+        if (!st._cfgPendingSave) return;
+
+        const ms = Math.min(20000, 1000 * Math.pow(2, Math.min(4, st._cfgRetryCount || 0)));
+
+        if (cfgRetryTimer) clearTimeout(cfgRetryTimer);
+        cfgRetryTimer = setTimeout(async () => {
+          await doCfgSaveNow();
+        }, ms);
+      };
+
+      const doCfgSaveNow = async () => {
+        await awaitHydrated();
+
+        const st = get();
+        const siteCode = String(st.siteCode || "").trim().toLowerCase();
+        if (!siteCode) return;
+
+        try {
+          if (typeof navigator !== "undefined" && navigator.onLine === false) {
+            set({ cfgStatus: "offline", cfgError: prettifyApiError("offline"), _cfgPendingSave: true });
+            scheduleCfgRetry();
+            return;
+          }
+
+          set({ _cfgSaving: true, cfgStatus: "saving", cfgError: "" });
+
+          // ⚠️ endpoint admin => si pas admin => 403 (on affiche l’erreur mais on ne casse rien)
+          await apiFetch(`/api/admin/update-config`, {
+            method: "POST",
+            siteCode,
+            body: {
+              siteCode,
+              preparateursList: st.preparateursList,
+              coordosList: st.coordosList,
+              postes: st.postes,
+              horaires: st.horaires,
+              rotationMinutes: st.rotationMinutes,
+              rotationWarnMinutes: st.rotationWarnMinutes,
+              pauseAfterMinutes: st.pauseAfterMinutes,
+              pauseDurationMinutes: st.pauseDurationMinutes,
+              pauseWaveSize: st.pauseWaveSize,
+              syncBlocksToSystemClock: st.syncBlocksToSystemClock,
+            },
+          });
+
+          set({
+            _cfgSaving: false,
+            _cfgPendingSave: false,
+            _cfgRetryCount: 0,
+            _cfgLastWriteAt: Date.now(),
+            cfgStatus: "loaded",
+            cfgError: "",
+          });
+        } catch (e) {
+          const msg = String(e?.message || e);
+          const lower = msg.toLowerCase();
+
+          const isNetwork =
+            lower.includes("fetch") ||
+            lower.includes("network") ||
+            lower.includes("offline") ||
+            lower.includes("timeout");
+
+          if (isNetwork) {
+            set((s) => ({
+              _cfgSaving: false,
+              cfgStatus: "offline",
+              cfgError: prettifyApiError(msg),
+              _cfgPendingSave: true,
+              _cfgRetryCount: (s._cfgRetryCount || 0) + 1,
+            }));
+            scheduleCfgRetry();
+            return;
+          }
+
+          set((s) => ({
+            _cfgSaving: false,
+            cfgStatus: "error",
+            cfgError: prettifyApiError(msg),
+            _cfgPendingSave: false,
+            _cfgRetryCount: s._cfgRetryCount || 0,
+          }));
+        }
+      };
+
+      const scheduleCfgSave = () => {
+        if (cfgSaveTimer) clearTimeout(cfgSaveTimer);
+        cfgSaveTimer = setTimeout(async () => {
+          await doCfgSaveNow();
+        }, 450);
+      };
+
+      // listeners online => retry
       if (typeof window !== "undefined" && !window.__driveopsOnlineListener) {
         window.__driveopsOnlineListener = true;
         window.addEventListener("online", () => {
           const st = get();
-          if (st._pendingSave) doSaveNow();
+          if (st._pendingSave) doSessionSaveNow();
+          if (st._cfgPendingSave) doCfgSaveNow();
         });
       }
 
-      // ---------------- Realtime
+      // ---------------- Site Config Hydrate
+      const hydrateSiteConfig = async (siteCode) => {
+        await awaitHydrated();
+        const site = String(siteCode || "").trim().toLowerCase();
+        if (!site) return;
+
+        const st = get();
+        if (st._cfgLoadedSite === site && st.cfgStatus === "loaded") return;
+
+        set({ cfgStatus: "loading", cfgError: "" });
+
+        try {
+          const j = await apiFetch(`/api/site/get-config?siteCode=${encodeURIComponent(site)}`, {
+            method: "GET",
+            siteCode: site,
+          });
+
+          const cfg = j?.config || null;
+          const mapped = mapConfigRowToStore(cfg, get());
+
+          if (mapped) {
+            set((s) => {
+              const next = { ...s, ...mapped };
+
+              // clamp pauseWaveSize
+              const staffLen = next.dayStaff?.length || 1;
+              next.pauseWaveSize = Math.max(1, Math.min(staffLen, Number(next.pauseWaveSize) || 1));
+
+              // ensure currentBlockId
+              const first = getFirstBlockId(next.horaires, next.rotationMinutes);
+              if (!next.currentBlockId || next.currentBlockId === "0") next.currentBlockId = first;
+              else next.currentBlockId = normalizeBlockId(next.currentBlockId, next.horaires);
+
+              return next;
+            });
+          }
+
+          set({ cfgStatus: "loaded", cfgError: "", _cfgLoadedSite: site });
+        } catch (e) {
+          const msg = String(e?.message || e);
+          set({ cfgStatus: "error", cfgError: prettifyApiError(msg), _cfgLoadedSite: site });
+        }
+      };
+
+      // ---------------- Realtime (drive_sessions)
       let currentChannel = null;
 
       const ensureRealtimeSubscribed = async (siteCode, dayDate) => {
@@ -464,8 +709,7 @@ export const useDriveStore = create(
               if (now - (st2._lastLocalWriteAt || 0) < 700) return;
               if (isEmptyObject(row.state_json)) return;
 
-              // ✅ merge SAFE only (ignore UI)
-              const next = mergeRemoteIntoState(st2, row.state_json);
+              const next = mergeRemoteSessionIntoState(st2, row.state_json);
               set({
                 ...next,
                 apiStatus: "pulled",
@@ -480,7 +724,7 @@ export const useDriveStore = create(
         set({ _subscribedKey: key });
       };
 
-      // ---------------- Hydrate (REMOTE -> LOCAL)
+      // ---------------- Hydrate (REMOTE session -> LOCAL)
       const hydrateFromRemote = async (siteCode, dayDate) => {
         await awaitHydrated();
 
@@ -507,9 +751,9 @@ export const useDriveStore = create(
               apiError: "",
             });
 
-            await doSaveNow();
+            await doSessionSaveNow();
           } else {
-            const merged = mergeRemoteIntoState({ ...get(), siteCode, dayDate }, row.state_json);
+            const merged = mergeRemoteSessionIntoState({ ...get(), siteCode, dayDate }, row.state_json);
 
             if (!merged.currentBlockId || merged.currentBlockId === "0") {
               merged.currentBlockId = getFirstBlockId(merged.horaires, merged.rotationMinutes);
@@ -553,16 +797,20 @@ export const useDriveStore = create(
             ...s,
             memberRole: null,
             screen: "setup",
-            setupStep: 1,
             apiStatus: "idle",
             apiError: "",
+            cfgStatus: "idle",
+            cfgError: "",
             _sessionLoadedKey: null,
             _subscribedKey: null,
+            _cfgLoadedSite: null,
           })),
 
+        // ✅ charge d’abord la config du site, puis la session du jour
         ensureSessionLoaded: async () => {
           await awaitHydrated();
           const s = get();
+          await hydrateSiteConfig(s.siteCode);
           await hydrateFromRemote(s.siteCode, s.dayDate);
         },
 
@@ -576,42 +824,53 @@ export const useDriveStore = create(
         // ---------- site/date (clé = site+date)
         setSiteCode: async (siteCode) => {
           await awaitHydrated();
+
           const v = String(siteCode || "").trim().toLowerCase();
           if (!v) return;
 
-          set((s) => ({ ...s, siteCode: v, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+          set((s) => ({
+            ...s,
+            siteCode: v,
+            _sessionLoadedKey: null,
+            _subscribedKey: null,
+            apiStatus: "idle",
+            apiError: "",
+          }));
+
+          await hydrateSiteConfig(v);
           await hydrateFromRemote(v, get().dayDate);
         },
 
         setDayDate: async (dayDate) => {
           await awaitHydrated();
-          const d = String(dayDate || "").slice(0, 10);
 
+          const d = String(dayDate || "").slice(0, 10);
           set((s) => ({ ...s, dayDate: d, _sessionLoadedKey: null, apiStatus: "idle", apiError: "" }));
+
+          // day change => session change
           await hydrateFromRemote(get().siteCode, d);
         },
 
-        // ---------- modes UI (LOCAL) ✅ pas de save remote ici
+        // ---------- modes UI (LOCAL)
         setWallMode: (wallMode) => set((s) => ({ ...s, wallMode: !!wallMode })),
         enterPrintMode: () => set((s) => ({ ...s, printMode: true })),
         exitPrintMode: () => set((s) => ({ ...s, printMode: false })),
 
+        // ---------- règles (SITE CONFIG)
         setSyncBlocksToSystemClock: (value) => {
           set((s) => ({ ...s, syncBlocksToSystemClock: !!value }));
-          scheduleSave(); // ✅ métier => remote ok
+          scheduleCfgSave();
         },
 
-        // ---------- pauses config
         setPauseWaveSize: (pauseWaveSize) => {
           set((s) => {
             const max = Math.max(1, s.dayStaff?.length || 1);
             const v = Math.max(1, Math.min(max, Number(pauseWaveSize) || 1));
             return { ...s, pauseWaveSize: v };
           });
-          scheduleSave();
+          scheduleCfgSave();
         },
-
-        // ---------- référentiels
+        // ---------- référentiels (SITE CONFIG)
         addPreparateurToList: (name) => {
           const n = normalizeName(name);
           if (!n) return;
@@ -619,7 +878,7 @@ export const useDriveStore = create(
             if (s.preparateursList.includes(n)) return s;
             return { ...s, preparateursList: [...s.preparateursList, n].sort() };
           });
-          scheduleSave();
+          scheduleCfgSave();
         },
 
         removePreparateurFromList: (name) => {
@@ -669,7 +928,10 @@ export const useDriveStore = create(
               pauseWaveSize,
             };
           });
-          scheduleSave();
+
+          // ✅ c’est à la fois config + journée
+          scheduleCfgSave();
+          scheduleSessionSave();
         },
 
         addCoordoToList: (name) => {
@@ -679,7 +941,7 @@ export const useDriveStore = create(
             if (s.coordosList.includes(n)) return s;
             return { ...s, coordosList: [...s.coordosList, n].sort() };
           });
-          scheduleSave();
+          scheduleCfgSave();
         },
 
         removeCoordoFromList: (name) => {
@@ -689,14 +951,15 @@ export const useDriveStore = create(
             const coordinator = normalizeName(s.coordinator) === upper ? "" : s.coordinator;
             return { ...s, coordosList, coordinator };
           });
-          scheduleSave();
+          scheduleCfgSave();
+          scheduleSessionSave();
         },
 
-        // ---------- config journée
+        // ---------- config journée (SESSION)
         setCoordinator: (coordinator) => {
           const c = normalizeName(coordinator);
           set((s) => ({ ...s, coordinator: c }));
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         toggleDayStaff: (name) => {
@@ -707,7 +970,9 @@ export const useDriveStore = create(
             const exists = s.dayStaff.includes(upper);
             const dayStaff = exists ? s.dayStaff.filter((x) => x !== upper) : [...s.dayStaff, upper].sort();
 
+            // clamp wave size (config) selon staff (jour)
             const pauseWaveSize = Math.max(1, Math.min(dayStaff.length || 1, s.pauseWaveSize || 1));
+
             const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
             const setupBlockId = getFirstBlockId(s.horaires, s.rotationMinutes);
 
@@ -725,10 +990,10 @@ export const useDriveStore = create(
             return { ...s, dayStaff, pauseWaveSize, assignments, currentBlockId: bid };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
-        // ---------- placement initial (setup)
+        // ---------- placement initial (setup) (SESSION)
         setInitialAssignment: (nom, poste) => {
           const s = get();
           const serviceOn = !!(s.dayStartedAt || s.serviceStartedAt);
@@ -748,7 +1013,7 @@ export const useDriveStore = create(
             return { ...prev, assignments, currentBlockId: blockId };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         fillMissingAssignmentsFromPrevBlock: () => {
@@ -775,15 +1040,13 @@ export const useDriveStore = create(
             return { ...s, assignments, skipRotation, pausePrevPoste, currentBlockId: bid };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         setCurrentBlockManual: (blockId) => {
           set((s) => {
             const bid = String(blockId ?? "");
             const curId = normalizeBlockId(s.currentBlockId, s.horaires);
-
-            // ✅ forcer mode manuel
             const syncBlocksToSystemClock = false;
 
             let { assignments, skipRotation, pausePrevPoste } = ensureBlockMaps(s, bid);
@@ -828,7 +1091,7 @@ export const useDriveStore = create(
             };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         startService: () => {
@@ -839,6 +1102,7 @@ export const useDriveStore = create(
             const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
 
             const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
+
             const now = new Date();
             const sysStartMin = shouldSyncToday ? getBlockStartMinForNow(s.horaires, s.rotationMinutes, now) : null;
             const first = sysStartMin != null ? String(sysStartMin) : firstDefault;
@@ -884,7 +1148,7 @@ export const useDriveStore = create(
             };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         stopService: () => {
@@ -905,7 +1169,7 @@ export const useDriveStore = create(
             };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         tick: () => {
@@ -962,7 +1226,7 @@ export const useDriveStore = create(
                   };
                 });
 
-                scheduleSave();
+                scheduleSessionSave();
                 return;
               }
             }
@@ -999,9 +1263,14 @@ export const useDriveStore = create(
 
             const currentIndex = blocks.findIndex((b) => b.id === curId);
             const nextObj = currentIndex >= 0 ? blocks[currentIndex + 1] : null;
-
             if (!nextObj) {
-              return { ...s, currentBlockId: curId, blockStartedAt: Date.now(), rotationImminent: false, rotationLocked: false };
+              return {
+                ...s,
+                currentBlockId: curId,
+                blockStartedAt: Date.now(),
+                rotationImminent: false,
+                rotationLocked: false,
+              };
             }
 
             const nextBlockId = nextObj.id;
@@ -1033,7 +1302,7 @@ export const useDriveStore = create(
             };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         setAssignment: (blockId, nom, poste) => {
@@ -1053,13 +1322,15 @@ export const useDriveStore = create(
 
             let pauseTakenAt = s.pauseTakenAt || {};
             if (p === "PAUSE" && (s.dayStartedAt || s.serviceStartedAt)) {
-              if (!pauseTakenAt[upperNom]) pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
+              if (!pauseTakenAt[upperNom]) {
+                pauseTakenAt = { ...pauseTakenAt, [upperNom]: Date.now() };
+              }
             }
 
             return { ...s, assignments, pausePrevPoste, pauseTakenAt };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         toggleSkipRotation: (blockId, nom) => {
@@ -1075,7 +1346,7 @@ export const useDriveStore = create(
             return { ...s, skipRotation };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         returnFromPause: (blockId, nom) => {
@@ -1085,6 +1356,7 @@ export const useDriveStore = create(
             if (!upperNom) return s;
 
             const { assignments, pausePrevPoste } = ensureBlockMaps(s, bid);
+
             const cur = normalizePoste(assignments?.[bid]?.[upperNom]);
             if (cur !== "PAUSE") return s;
 
@@ -1097,7 +1369,7 @@ export const useDriveStore = create(
             return { ...s, assignments, returnAlertUntil };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         returnAllEndedPausesCurrentBlock: () => {
@@ -1127,7 +1399,7 @@ export const useDriveStore = create(
             return { ...s, assignments, returnAlertUntil, pausePrevPoste };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
 
         resetDay: () => {
@@ -1161,39 +1433,26 @@ export const useDriveStore = create(
             };
           });
 
-          scheduleSave();
+          scheduleSessionSave();
         },
       };
     },
     {
       name: "driveops_v2",
-
-      // ✅ IMPORTANT : on bump la version => purge/migration des vieux écrans collés (admin/cockpit)
       version: 2,
 
       onRehydrateStorage: () => (state, err) => {
         _hydrated = true;
         _resolveHydrated?.();
+
         state?.setHasHydrated?.(true);
-        if (err) console.warn("driveops persist hydration error:", err);
-      },
 
-      // ✅ migration localStorage (si tu venais d’une version qui t’a collé screen=admin)
-      migrate: (persisted, fromVersion) => {
-        const p = persisted || {};
-        if (!fromVersion || fromVersion < 2) {
-          return {
-            ...p,
-            screen: "setup",
-            setupStep: 1,
-            wallMode: false,
-            printMode: false,
-          };
+        if (err) {
+          console.warn("driveops persist hydration error:", err);
         }
-        return p;
       },
 
-      // ✅ local persist: ok de garder l’UI ici
+      // ✅ local persist: on garde UI + config site + journée
       partialize: (s) => ({
         siteCode: s.siteCode,
         dayDate: s.dayDate,
@@ -1203,6 +1462,7 @@ export const useDriveStore = create(
         wallMode: s.wallMode,
         printMode: s.printMode,
 
+        // site config (persist local en backup)
         preparateursList: s.preparateursList,
         coordosList: s.coordosList,
         postes: s.postes,
@@ -1215,6 +1475,7 @@ export const useDriveStore = create(
         pauseWaveSize: s.pauseWaveSize,
         syncBlocksToSystemClock: s.syncBlocksToSystemClock,
 
+        // session day
         coordinator: s.coordinator,
         dayStaff: s.dayStaff,
 
@@ -1234,6 +1495,9 @@ export const useDriveStore = create(
 
         apiStatus: s.apiStatus,
         apiError: s.apiError,
+
+        cfgStatus: s.cfgStatus,
+        cfgError: s.cfgError,
 
         memberRole: s.memberRole,
       }),
