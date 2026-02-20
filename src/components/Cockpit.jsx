@@ -6,7 +6,9 @@ import { buildBlocks, formatBlockLabel, toH } from "../utils/blocks";
 
 // ✅ Table d'icônes alignée sur les postes du store
 const POSTE_META = {
-  PGC: { icon: "📦", label: "PGC" },
+  
+ACCUEIL: { icon: "🛎️", label: "ACCUEIL" },
+PGC: { icon: "📦", label: "PGC" },
   FS: { icon: "🏷️", label: "FS" },
   LIV: { icon: "🚚", label: "LIV" },
   MES: { icon: "📥", label: "MES" }, // Mise en stock

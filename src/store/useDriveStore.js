@@ -268,19 +268,41 @@ function mapConfigRowToStore(cfg, fallback) {
   return next;
 }
 
+/**
+ * ✅ apiFetch robuste :
+ * - envoie toujours Authorization Bearer
+ * - si 401 : refreshSession() puis retry 1 fois
+ */
 async function apiFetch(path, { method = "GET", body, siteCode } = {}) {
-  const token = await getAccessToken();
-  if (!token) throw new Error("Session invalide (token manquant). Reconnecte-toi.");
+  const site = String(siteCode || "").trim().toLowerCase();
 
-  const r = await fetch(urlJoin(path), {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      "X-Site-Code": siteCode || "",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const doRequest = async (token) => {
+    return fetch(urlJoin(path), {
+      method,
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "X-Site-Code": site,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  };
+
+  let token = await getAccessToken();
+  if (!token) throw new Error("Missing token (reconnecte-toi)");
+
+  let r = await doRequest(token);
+
+  // retry après refresh si session/token pas prêt sur certains devices
+  if (r.status === 401) {
+    try {
+      await supabase.auth.refreshSession();
+    } catch {}
+    token = await getAccessToken();
+    if (!token) throw new Error("Missing token after refresh (reconnecte-toi)");
+    r = await doRequest(token);
+  }
 
   const text = await r.text();
   let j = {};
@@ -313,7 +335,7 @@ const defaultState = {
   // ✅ référentiels + règles (par site) — seront remplacés par drive_site_config dès que chargé
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
-  postes: ["PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
+  postes: ["ACCUEIL","PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
   horaires: [
     "06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00",
     "16:00","17:00","18:00","19:00","20:00","21:00",
@@ -545,6 +567,14 @@ export const useDriveStore = create(
         const siteCode = String(st.siteCode || "").trim().toLowerCase();
         if (!siteCode) return;
 
+        // ✅ IMPORTANT : seule une personne admin doit écrire la config site
+        const role = String(st.memberRole || "").trim().toLowerCase();
+        if (role !== "admin") {
+          // on ne casse rien : on laisse la config locale, mais on n'appelle pas l'API admin
+          set({ cfgStatus: "loaded", cfgError: "" });
+          return;
+        }
+
         try {
           if (typeof navigator !== "undefined" && navigator.onLine === false) {
             set({ cfgStatus: "offline", cfgError: prettifyApiError("offline"), _cfgPendingSave: true });
@@ -554,7 +584,6 @@ export const useDriveStore = create(
 
           set({ _cfgSaving: true, cfgStatus: "saving", cfgError: "" });
 
-          // ⚠️ endpoint admin => si pas admin => 403 (on affiche l’erreur mais on ne casse rien)
           await apiFetch(`/api/admin/update-config`, {
             method: "POST",
             siteCode,
@@ -628,7 +657,7 @@ export const useDriveStore = create(
           if (st._pendingSave) doSessionSaveNow();
           if (st._cfgPendingSave) doCfgSaveNow();
         });
-      }
+      };
 
       // ---------------- Site Config Hydrate
       const hydrateSiteConfig = async (siteCode) => {
@@ -870,6 +899,7 @@ export const useDriveStore = create(
           });
           scheduleCfgSave();
         },
+
         // ---------- référentiels (SITE CONFIG)
         addPreparateurToList: (name) => {
           const n = normalizeName(name);
@@ -880,7 +910,6 @@ export const useDriveStore = create(
           });
           scheduleCfgSave();
         },
-
         removePreparateurFromList: (name) => {
           const upper = normalizeName(name);
           set((s) => {
