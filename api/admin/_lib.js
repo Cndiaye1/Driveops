@@ -48,6 +48,7 @@ async function readBody(req) {
       if (typeof req.body === "string") return JSON.parse(req.body || "{}");
       return req.body;
     }
+    // fallback (rare)
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const raw = Buffer.concat(chunks).toString("utf8");
@@ -78,6 +79,7 @@ function getEnv() {
         "SUPABASE_SERVICE_ROLE_KEY invalide : tu as mis une clé publishable. Mets la clé service_role (sb_secret_...).",
     };
   }
+
   return { supabaseUrl, serviceKey };
 }
 
@@ -100,45 +102,56 @@ async function requireUser(req, sb) {
   return u.user;
 }
 
-async function isGlobalAdmin(sb, userId) {
-  const { data, error } = await sb
-    .from("drive_global_admins")
-    .select("user_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error) return false;
-  return !!data?.user_id;
-}
-
-async function isSiteAdmin(sb, userId, siteCode) {
-  const site_code = normalizeSiteCode(siteCode);
-  const { data, error } = await sb
-    .from("drive_site_members")
-    .select("role")
-    .eq("site_code", site_code)
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error) return false;
-  return String(data?.role || "").toLowerCase() === "admin";
-}
-
+/**
+ * ✅ Vérifie que l'utilisateur est membre du site (sinon 403)
+ * Retourne la ligne member (role, member_code, etc.)
+ */
 async function requireSiteMember(sb, userId, siteCode) {
   const site_code = normalizeSiteCode(siteCode);
+  if (!site_code) throw Object.assign(new Error("siteCode required"), { status: 400 });
+
   const { data, error } = await sb
     .from("drive_site_members")
-    .select("role")
+    .select("site_code,user_id,member_code,role,created_at")
     .eq("site_code", site_code)
     .eq("user_id", userId)
     .maybeSingle();
 
   if (error) throw Object.assign(new Error(error.message), { status: 500 });
-  if (!data?.role) throw Object.assign(new Error("Not member of this site"), { status: 403 });
+  if (!data) throw Object.assign(new Error("Not member for this site"), { status: 403 });
 
-  return String(data.role).toLowerCase();
+  return data;
 }
 
 /**
- * Admin site OU bootstrap :
+ * ✅ Global admin (optionnel)
+ * - Si la table n'existe pas, on retourne false (pas de crash / pas de 500)
+ * Table attendue (si tu veux): public.drive_global_admins(user_id uuid primary key, created_at timestamptz)
+ */
+async function isGlobalAdmin(sb, userId) {
+  try {
+    const { data, error } = await sb
+      .from("drive_global_admins")
+      .select("user_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      // Si la table n'existe pas, Supabase renvoie une erreur → on considère "false"
+      const msg = String(error.message || "");
+      if (msg.toLowerCase().includes("does not exist")) return false;
+      // autre erreur -> on ne casse pas non plus, mais on logiquement refuse "global"
+      return false;
+    }
+
+    return !!data?.user_id;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ✅ Admin site OU bootstrap :
  * - Si caller est déjà admin => ok
  * - Sinon, si aucun admin n’existe sur ce site => bootstrap caller admin
  * - Sinon => 403
@@ -153,6 +166,7 @@ async function ensureAdminOrBootstrap(sb, siteCode, callerId) {
     .eq("site_code", site_code)
     .eq("user_id", callerId)
     .maybeSingle();
+
   if (mErr) throw Object.assign(new Error(mErr.message), { status: 500 });
 
   const role = String(member?.role || "").trim().toLowerCase();
@@ -165,6 +179,7 @@ async function ensureAdminOrBootstrap(sb, siteCode, callerId) {
     .eq("role", "admin")
     .limit(1)
     .maybeSingle();
+
   if (aErr) throw Object.assign(new Error(aErr.message), { status: 500 });
 
   if (!anyAdmin?.user_id) {
@@ -188,8 +203,7 @@ module.exports = {
   normalizeSiteCode,
   supabaseAdmin,
   requireUser,
-  isGlobalAdmin,
-  isSiteAdmin,
   requireSiteMember,
+  isGlobalAdmin,
   ensureAdminOrBootstrap,
 };
