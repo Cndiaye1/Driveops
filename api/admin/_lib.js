@@ -48,7 +48,6 @@ async function readBody(req) {
       if (typeof req.body === "string") return JSON.parse(req.body || "{}");
       return req.body;
     }
-    // fallback (rare)
     const chunks = [];
     for await (const c of req) chunks.push(c);
     const raw = Buffer.concat(chunks).toString("utf8");
@@ -79,7 +78,6 @@ function getEnv() {
         "SUPABASE_SERVICE_ROLE_KEY invalide : tu as mis une clé publishable. Mets la clé service_role (sb_secret_...).",
     };
   }
-
   return { supabaseUrl, serviceKey };
 }
 
@@ -103,8 +101,7 @@ async function requireUser(req, sb) {
 }
 
 /**
- * ✅ Vérifie que l'utilisateur est membre du site (sinon 403)
- * Retourne la ligne member (role, member_code, etc.)
+ * ✅ Vérifie que l'utilisateur est membre du site (admin/manager/user)
  */
 async function requireSiteMember(sb, userId, siteCode) {
   const site_code = normalizeSiteCode(siteCode);
@@ -118,15 +115,15 @@ async function requireSiteMember(sb, userId, siteCode) {
     .maybeSingle();
 
   if (error) throw Object.assign(new Error(error.message), { status: 500 });
-  if (!data) throw Object.assign(new Error("Not member for this site"), { status: 403 });
+  if (!data?.user_id) throw Object.assign(new Error("Not site member"), { status: 403 });
 
   return data;
 }
 
 /**
- * ✅ Global admin (optionnel)
- * - Si la table n'existe pas, on retourne false (pas de crash / pas de 500)
- * Table attendue (si tu veux): public.drive_global_admins(user_id uuid primary key, created_at timestamptz)
+ * ✅ Global admin optionnel
+ * - si table drive_global_admins n'existe pas => retourne false (NE CRASH PAS)
+ * - si existe => true si userId présent
  */
 async function isGlobalAdmin(sb, userId) {
   try {
@@ -137,23 +134,24 @@ async function isGlobalAdmin(sb, userId) {
       .maybeSingle();
 
     if (error) {
-      // Si la table n'existe pas, Supabase renvoie une erreur → on considère "false"
-      const msg = String(error.message || "");
-      if (msg.toLowerCase().includes("does not exist")) return false;
-      // autre erreur -> on ne casse pas non plus, mais on logiquement refuse "global"
-      return false;
+      const msg = String(error.message || "").toLowerCase();
+      // table absente => on ignore
+      if (msg.includes("does not exist") || msg.includes("schema cache") || msg.includes("relation")) return false;
+      // autre erreur => on remonte
+      throw error;
     }
-
     return !!data?.user_id;
-  } catch {
-    return false;
+  } catch (e) {
+    const msg = String(e?.message || "").toLowerCase();
+    if (msg.includes("does not exist") || msg.includes("schema cache") || msg.includes("relation")) return false;
+    throw Object.assign(new Error(e?.message || String(e)), { status: 500 });
   }
 }
 
 /**
  * ✅ Admin site OU bootstrap :
  * - Si caller est déjà admin => ok
- * - Sinon, si aucun admin n’existe sur ce site => bootstrap caller admin
+ * - Sinon, si aucun admin n’existe sur ce site => bootstrap le caller admin
  * - Sinon => 403
  */
 async function ensureAdminOrBootstrap(sb, siteCode, callerId) {
