@@ -20,6 +20,7 @@ module.exports = async (req, res) => {
     const siteCode = getSiteCode(req, null);
     if (!siteCode) return json(res, 400, { ok: false, error: "siteCode required" });
 
+    // ✅ accès : membre du site OU global admin
     const global = await isGlobalAdmin(sb, user.id);
     if (!global) await requireSiteMember(sb, user.id, siteCode);
 
@@ -28,9 +29,14 @@ module.exports = async (req, res) => {
       .select("*")
       .eq("site_code", siteCode)
       .maybeSingle();
+
     if (error) throw error;
 
-    return json(res, 200, { ok: true, site_code: siteCode, config: data || null });
+    return json(res, 200, {
+      ok: true,
+      site_code: siteCode,
+      config: data || null, // si pas encore de config => null (le front garde ses defaults)
+    });
   } catch (e) {
     return json(res, e.status || 500, { ok: false, error: e?.message || String(e) });
   }
