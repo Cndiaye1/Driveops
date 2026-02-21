@@ -6,8 +6,8 @@ export default function SetupHeader({
   setupStep,
   siteDraft,
   setSiteDraft,
-  normUpper,
   commitSiteCode,
+  normUpper,
   siteCode,
   dayDate,
   setDayDate,
@@ -17,15 +17,13 @@ export default function SetupHeader({
   goToCockpitSafe,
   handleLogout,
   apiStatus,
-  apiBadgeColor,
   apiError,
-  showCfgStatus,
+  apiBadgeColor,
   cfgStatus,
   cfgError,
+  hasCfgStatusLine,
   role,
 }) {
-  const inputStyle = ui.input;
-
   return (
     <div className="setupHeader">
       <div>
@@ -54,7 +52,6 @@ export default function SetupHeader({
           padding: 10,
         }}
       >
-        {/* Site code (draft + valider) */}
         <div>
           <label className="muted small" style={ui.label}>
             Site code
@@ -68,7 +65,7 @@ export default function SetupHeader({
                 if (e.key === "Enter") commitSiteCode();
               }}
               placeholder="MELUN"
-              style={{ ...inputStyle, minWidth: 120 }}
+              style={{ ...ui.input, minWidth: 120 }}
             />
             <button
               className="btn ghost"
@@ -93,7 +90,7 @@ export default function SetupHeader({
             type="date"
             value={dayDate}
             onChange={(e) => setDayDate(e.target.value)}
-            style={inputStyle}
+            style={ui.input}
           />
         </div>
 
@@ -150,7 +147,7 @@ export default function SetupHeader({
             {apiError ? <span style={{ opacity: 0.9 }}> — {apiError}</span> : null}
           </div>
 
-          {showCfgStatus ? (
+          {hasCfgStatusLine ? (
             <div style={{ marginTop: 2, opacity: 0.92 }}>
               Config site: <b>{cfgStatus || "—"}</b>
               {cfgError ? <span style={{ opacity: 0.9 }}> — {cfgError}</span> : null}

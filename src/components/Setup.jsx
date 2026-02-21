@@ -8,7 +8,6 @@ import SetupStepTabs from "./setup/SetupStepTabs";
 import SetupStepTeam from "./setup/SetupStepTeam";
 import SetupStepPlacement from "./setup/SetupStepPlacement";
 import SetupSummaryCard from "./setup/SetupSummaryCard";
-import { setupUi, getApiBadgeColor } from "./setup/setupTheme";
 
 export default function Setup({ adminState } = {}) {
   const {
@@ -59,7 +58,6 @@ export default function Setup({ adminState } = {}) {
     memberRole,
     resetAuthState,
 
-    // optionnel si dispo dans store (status config site)
     cfgStatus,
     cfgError,
   } = useDriveStore();
@@ -67,8 +65,8 @@ export default function Setup({ adminState } = {}) {
   const [newPrep, setNewPrep] = useState("");
   const [newCoordo, setNewCoordo] = useState("");
 
-  // ✅ input site: draft + commit
   const [siteDraft, setSiteDraft] = useState((siteCode || "").toUpperCase());
+
   useEffect(() => {
     setSiteDraft((siteCode || "").toUpperCase());
   }, [siteCode]);
@@ -80,7 +78,6 @@ export default function Setup({ adminState } = {}) {
   const normUpper = (s) => String(s || "").trim().toUpperCase();
   const normLower = (s) => String(s || "").trim().toLowerCase();
 
-  // ✅ Au montage : charge la session (remote) si besoin
   useEffect(() => {
     ensureSessionLoaded?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,13 +133,12 @@ export default function Setup({ adminState } = {}) {
     if (next === cur) return;
 
     try {
-      await setSiteCode(next); // async (hydrate remote)
+      await setSiteCode(next);
     } catch (e) {
       console.error("[setSiteCode]", e);
     }
   }
 
-  // ✅ NAV helpers : important sur Vercel si tu es sur /admin (URL) mais app en screen-based
   function pushUrl(pathname) {
     try {
       if (typeof window !== "undefined" && window.location.pathname !== pathname) {
@@ -174,10 +170,111 @@ export default function Setup({ adminState } = {}) {
     }
   }
 
-  // ✅ garde compatible si le store n’expose pas encore cfgStatus/cfgError
-  const showCfgStatus = "cfgStatus" in (useDriveStore.getState?.() || {});
-  const ui = setupUi;
-  const apiBadgeColor = getApiBadgeColor(apiStatus);
+  const ui = {
+    surface: {
+      background: "rgba(255,255,255,0.03)",
+      border: "1px solid rgba(255,255,255,0.10)",
+      borderRadius: 14,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+    },
+    section: {
+      background: "rgba(255,255,255,0.02)",
+      border: "1px solid rgba(255,255,255,0.08)",
+      borderRadius: 12,
+      padding: 14,
+    },
+    label: {
+      fontSize: 12,
+      opacity: 0.78,
+      marginBottom: 4,
+      display: "block",
+      fontWeight: 600,
+      letterSpacing: "0.2px",
+    },
+    input: {
+      width: "100%",
+      background: "#0f172a",
+      color: "#e5e7eb",
+      border: "1px solid rgba(255,255,255,0.14)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      outline: "none",
+      boxSizing: "border-box",
+    },
+    select: {
+      width: "100%",
+      background: "#0f172a",
+      color: "#e5e7eb",
+      border: "1px solid rgba(255,255,255,0.14)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      outline: "none",
+      boxSizing: "border-box",
+    },
+    option: {
+      backgroundColor: "#0f172a",
+      color: "#e5e7eb",
+    },
+    btn: {
+      background: "#1f2937",
+      color: "#f9fafb",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    btnPrimary: {
+      background: "linear-gradient(180deg, #ef4444, #dc2626)",
+      color: "#fff",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "10px 14px",
+      cursor: "pointer",
+      fontWeight: 700,
+      boxShadow: "0 8px 18px rgba(220,38,38,0.25)",
+    },
+    btnGhost: {
+      background: "rgba(255,255,255,0.03)",
+      color: "#f3f4f6",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    smallPill: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 999,
+      border: "1px solid rgba(255,255,255,0.10)",
+      background: "rgba(255,255,255,0.03)",
+      fontSize: 12,
+      opacity: 0.95,
+    },
+    summaryCard: {
+      marginTop: 12,
+      padding: 14,
+      borderRadius: 14,
+      border: "1px solid rgba(255,255,255,0.10)",
+      background:
+        "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))",
+    },
+  };
+
+  const apiBadgeColor =
+    apiStatus === "error"
+      ? "#fca5a5"
+      : apiStatus === "offline"
+      ? "#fcd34d"
+      : apiStatus === "pushed" || apiStatus === "pulled"
+      ? "#86efac"
+      : "#cbd5e1";
+
+  const hasCfgStatusLine =
+    typeof useDriveStore.getState === "function" && "cfgStatus" in useDriveStore.getState();
 
   return (
     <div className="page">
@@ -188,8 +285,8 @@ export default function Setup({ adminState } = {}) {
           setupStep={setupStep}
           siteDraft={siteDraft}
           setSiteDraft={setSiteDraft}
-          normUpper={normUpper}
           commitSiteCode={commitSiteCode}
+          normUpper={normUpper}
           siteCode={siteCode}
           dayDate={dayDate}
           setDayDate={setDayDate}
@@ -199,11 +296,11 @@ export default function Setup({ adminState } = {}) {
           goToCockpitSafe={goToCockpitSafe}
           handleLogout={handleLogout}
           apiStatus={apiStatus}
-          apiBadgeColor={apiBadgeColor}
           apiError={apiError}
-          showCfgStatus={showCfgStatus}
+          apiBadgeColor={apiBadgeColor}
           cfgStatus={cfgStatus}
           cfgError={cfgError}
+          hasCfgStatusLine={hasCfgStatusLine}
           role={role}
         />
 
@@ -217,20 +314,20 @@ export default function Setup({ adminState } = {}) {
         {setupStep === 1 && (
           <SetupStepTeam
             ui={ui}
+            coordosList={coordosList}
             coordinator={coordinator}
             setCoordinator={setCoordinator}
-            coordosList={coordosList || []}
             newCoordo={newCoordo}
             setNewCoordo={setNewCoordo}
             addCoordo={addCoordo}
             removeCoordoFromList={removeCoordoFromList}
-            preparateursList={preparateursList || []}
-            dayStaff={dayStaff || []}
+            preparateursList={preparateursList}
+            dayStaff={dayStaff}
             toggleDayStaff={toggleDayStaff}
+            removePreparateurFromList={removePreparateurFromList}
             newPrep={newPrep}
             setNewPrep={setNewPrep}
             addPrep={addPrep}
-            removePreparateurFromList={removePreparateurFromList}
             pauseWaveSize={pauseWaveSize}
             setPauseWaveSize={setPauseWaveSize}
             waveMax={waveMax}
@@ -243,16 +340,16 @@ export default function Setup({ adminState } = {}) {
         {setupStep === 2 && (
           <SetupStepPlacement
             ui={ui}
+            selectedStaff={selectedStaff}
             effectiveBlockId={effectiveBlockId}
             isServiceRunning={isServiceRunning}
-            allHavePoste={allHavePoste}
-            selectedStaff={selectedStaff}
-            normUpper={normUpper}
             blockAssignments={blockAssignments}
+            postes={postes}
             setInitialAssignment={setInitialAssignment}
-            postes={postes || []}
-            setSetupStep={setSetupStep}
+            normUpper={normUpper}
+            allHavePoste={allHavePoste}
             canStart={canStart}
+            setSetupStep={setSetupStep}
             startService={startService}
           />
         )}
@@ -263,8 +360,8 @@ export default function Setup({ adminState } = {}) {
         siteCode={siteCode}
         dayDate={dayDate}
         coordinator={coordinator}
-        dayStaffCount={(dayStaff || []).length}
-        pauseWaveSize={pauseWaveSize}
+        dayStaffCount={dayStaff.length}
+        pauseWaveSize={pauseWaveSize || 1}
       />
     </div>
   );

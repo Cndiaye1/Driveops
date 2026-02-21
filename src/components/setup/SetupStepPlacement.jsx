@@ -2,16 +2,16 @@ import React from "react";
 
 export default function SetupStepPlacement({
   ui,
+  selectedStaff,
   effectiveBlockId,
   isServiceRunning,
-  allHavePoste,
-  selectedStaff = [],
-  normUpper,
-  blockAssignments = {},
+  blockAssignments,
+  postes,
   setInitialAssignment,
-  postes = [],
-  setSetupStep,
+  normUpper,
+  allHavePoste,
   canStart,
+  setSetupStep,
   startService,
 }) {
   const selectStyle = ui.select;
@@ -20,7 +20,14 @@ export default function SetupStepPlacement({
   return (
     <>
       <div className="section" style={ui.section}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
           <h2 style={{ margin: 0 }}>📍 Placement initial</h2>
           <span style={ui.smallPill}>
             Bloc: <b>{effectiveBlockId}</b>
@@ -34,8 +41,9 @@ export default function SetupStepPlacement({
         </p>
 
         <div className="placementGrid">
-          {selectedStaff.map((nom) => {
+          {(selectedStaff || []).map((nom) => {
             const key = normUpper(nom);
+
             return (
               <div
                 key={nom}
@@ -50,6 +58,7 @@ export default function SetupStepPlacement({
                 <div className="placementName" style={{ fontWeight: 700 }}>
                   {nom}
                 </div>
+
                 <select
                   value={blockAssignments[key] || ""}
                   onChange={(e) => setInitialAssignment(nom, e.target.value)}
@@ -58,7 +67,7 @@ export default function SetupStepPlacement({
                   <option value="" style={optionStyle}>
                     -- Choisir poste --
                   </option>
-                  {postes.map((p) => (
+                  {(postes || []).map((p) => (
                     <option key={p} value={p} style={optionStyle}>
                       {p}
                     </option>
