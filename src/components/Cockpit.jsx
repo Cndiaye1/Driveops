@@ -1,10 +1,37 @@
-// src/components/Cockpit.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { formatClock, minLeft, minutesSince } from "../utils/time";
 import { buildBlocks, formatBlockLabel, toH } from "../utils/blocks";
-import { normalizePoste } from "./cockpit/posteMeta";
-import CockpitStaffCardsSection from "./cockpit/CockpitStaffCardsSection";
+
+// ✅ Table d'icônes alignée sur les postes du store
+const POSTE_META = {
+  ACCUEIL: { icon: "🛎️", label: "ACCUEIL" },
+  PGC: { icon: "📦", label: "PGC" },
+  FS: { icon: "🏷️", label: "FS" },
+  LIV: { icon: "🚚", label: "LIV" },
+  MES: { icon: "📥", label: "MES" }, // Mise en stock
+  LAD: { icon: "🏠", label: "LAD" }, // Livraison à domicile
+  "FLEG/SURG": { icon: "🥬🧊", label: "FLEG/SURG" },
+  RE: { icon: "♻️", label: "RE" }, // Réceptions / retours
+  NET: { icon: "🧽", label: "NET" }, // Nettoyage
+  PAUSE: { icon: "☕", label: "PAUSE" },
+};
+
+function normalizePoste(p) {
+  return (p || "").trim().toUpperCase();
+}
+
+// ✅ gère aussi les cas "FLEG" / "SURG" -> "FLEG/SURG"
+function posteMeta(poste) {
+  const key = normalizePoste(poste);
+  if (!key) return { icon: "📍", label: "" };
+
+  if (POSTE_META[key]) return POSTE_META[key];
+
+  if (key === "FLEG" || key === "SURG") return POSTE_META["FLEG/SURG"];
+
+  return { icon: "📍", label: key };
+}
 
 export default function Cockpit() {
   const {
@@ -86,16 +113,6 @@ export default function Cockpit() {
       backgroundColor: "#0f172a",
       color: "#e5e7eb",
     },
-    input: {
-      width: "100%",
-      background: "#0f172a",
-      color: "#e5e7eb",
-      border: "1px solid rgba(255,255,255,0.14)",
-      borderRadius: 10,
-      padding: "10px 12px",
-      outline: "none",
-      boxSizing: "border-box",
-    },
     btnGhost: {
       background: "rgba(255,255,255,0.03)",
       color: "#f3f4f6",
@@ -117,7 +134,8 @@ export default function Cockpit() {
     },
     panel: {
       border: "1px solid rgba(255,255,255,0.10)",
-      background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))",
+      background:
+        "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015))",
       borderRadius: 14,
       boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
     },
@@ -138,6 +156,10 @@ export default function Cockpit() {
     },
   };
 
+  const closeMenus = useCallback(() => {
+    setMenuOpen(false);
+  }, []);
+
   const togglePausePick = useCallback((nom) => {
     setPauseSelection((s) => ({ ...s, [nom]: !s[nom] }));
   }, []);
@@ -147,11 +169,13 @@ export default function Cockpit() {
     [pauseSelection]
   );
 
+  // Horloge UI
   useEffect(() => {
     const t1 = setInterval(() => setClock(formatClock()), 1000);
     return () => clearInterval(t1);
   }, []);
 
+  // Body modes
   useEffect(() => {
     document.body.classList.toggle("wall", !!wallMode);
   }, [wallMode]);
@@ -164,12 +188,14 @@ export default function Cockpit() {
     document.body.classList.toggle("modalOpen", !!blockModalOpen);
   }, [blockModalOpen]);
 
+  // Print cleanup
   useEffect(() => {
     const onAfterPrint = () => exitPrintMode();
     window.addEventListener("afterprint", onAfterPrint);
     return () => window.removeEventListener("afterprint", onAfterPrint);
   }, [exitPrintMode]);
 
+  // ESC shortcuts
   useEffect(() => {
     function onKey(e) {
       if (e.key === "Escape") {
@@ -296,15 +322,24 @@ export default function Cockpit() {
     const due = pausesDueList.filter((n) => normalizePoste(blockAssignments[n]) !== "PAUSE");
     const pick = due.slice(0, Math.max(1, pauseWaveSize || 1));
     const next = {};
-    pick.forEach((n) => (next[n] = true));
+    pick.forEach((n) => {
+      next[n] = true;
+    });
     setPauseSelection(next);
   }, [pausesDueList, blockAssignments, pauseWaveSize]);
 
   const sendPauseWave = useCallback(() => {
-    const wave = selectedPauseList.slice(0, Math.max(1, pauseWaveSize || 1));
+    const maxWave = Math.max(1, pauseWaveSize || 1);
+
+    const eligible = selectedPauseList.filter(
+      (nom) =>
+        pausesDueList.includes(nom) && normalizePoste(blockAssignments[nom]) !== "PAUSE"
+    );
+
+    const wave = eligible.slice(0, maxWave);
     wave.forEach((nom) => setAssignment(String(currentBlockId), nom, "PAUSE"));
     setPauseSelection({});
-  }, [selectedPauseList, pauseWaveSize, setAssignment, currentBlockId]);
+  }, [selectedPauseList, pausesDueList, blockAssignments, pauseWaveSize, setAssignment, currentBlockId]);
 
   // ✅ Modal bloc
   const openBlockModal = useCallback(() => {
@@ -315,6 +350,8 @@ export default function Cockpit() {
 
   const applyBlockModal = useCallback(() => {
     const bid = String(blockDraft ?? "");
+    if (!bid) return;
+
     const ok = window.confirm(
       "Forcer ce bloc manuellement ?\n\n⚠️ Cela désactive la sync sur l’heure du PC."
     );
@@ -336,8 +373,32 @@ export default function Cockpit() {
 
   const phaseTone = rotationLocked ? "#fca5a5" : rotationImminent ? "#fcd34d" : "#86efac";
 
+  const handleGoSetup = useCallback(() => {
+    setMenuOpen(false);
+    goSetup?.();
+    try {
+      if (typeof window !== "undefined" && window.location.pathname !== "/") {
+        window.history.pushState({}, "", "/");
+      }
+    } catch {
+      // noop
+    }
+  }, [goSetup]);
+
+  const handleStopService = useCallback(() => {
+    setMenuOpen(false);
+    stopService?.();
+    try {
+      if (typeof window !== "undefined" && window.location.pathname !== "/") {
+        window.history.pushState({}, "", "/");
+      }
+    } catch {
+      // noop
+    }
+  }, [stopService]);
+
   return (
-    <div className="page" onClick={() => menuOpen && setMenuOpen(false)}>
+    <div className="page" onClick={() => menuOpen && closeMenus()}>
       {/* ✅ MODAL “FORCER BLOC” */}
       {blockModalOpen && (
         <div className="modalOverlay" onClick={() => setBlockModalOpen(false)}>
@@ -416,7 +477,7 @@ export default function Cockpit() {
           </div>
 
           <div className="muted" style={{ marginBottom: 4 }}>
-            Horloge: <b>{clock}</b>
+            Horloge : <b>{clock}</b>
           </div>
 
           <div
@@ -429,11 +490,11 @@ export default function Cockpit() {
               background: "rgba(255,255,255,0.02)",
             }}
           >
-            Bloc: <b>{blockLabel}</b>
+            Bloc : <b>{blockLabel}</b>
             <span className="dot">•</span>
-            Phase: <b style={{ color: phaseTone }}>{phaseLabel}</b>
+            Phase : <b style={{ color: phaseTone }}>{phaseLabel}</b>
             <span className="dot">•</span>
-            Rotation: <b>{rotationLocked ? "À FAIRE" : `${remaining ?? "--"} min`}</b>
+            Rotation : <b>{rotationLocked ? "À FAIRE" : `${remaining ?? "--"} min`}</b>
           </div>
 
           <div className="muted small">
@@ -520,7 +581,7 @@ export default function Cockpit() {
                       position: "absolute",
                       right: 0,
                       top: "calc(100% + 8px)",
-                      width: 280,
+                      width: 300,
                       padding: 12,
                       zIndex: 9999,
                     }}
@@ -529,10 +590,7 @@ export default function Cockpit() {
                     <button
                       className="btn ghost"
                       style={{ ...ui.btnGhost, width: "100%", marginBottom: 8 }}
-                      onClick={() => {
-                        setMenuOpen(false);
-                        goSetup();
-                      }}
+                      onClick={handleGoSetup}
                       type="button"
                     >
                       ⚙️ Setup
@@ -541,10 +599,7 @@ export default function Cockpit() {
                     <button
                       className="btn ghost"
                       style={{ ...ui.btnGhost, width: "100%", marginBottom: 10 }}
-                      onClick={() => {
-                        setMenuOpen(false);
-                        stopService();
-                      }}
+                      onClick={handleStopService}
                       type="button"
                     >
                       ⏹️ Stop service
@@ -799,37 +854,227 @@ export default function Cockpit() {
 
       {rotationLocked && (
         <div className="card callout danger" style={ui.panel}>
-          🔄 <b>Rotation obligatoire</b> : réassigne les postes puis clique <b>“Valider rotation”</b>.
+          🔄 <b>Rotation obligatoire</b> : réassigne les postes puis clique{" "}
+          <b>“Valider rotation”</b>.
         </div>
       )}
 
-      {/* ✅ Section extraite */}
-      <CockpitStaffCardsSection
-        ui={ui}
-        blockLabel={blockLabel}
-        rotationMinutes={rotationMinutes}
-        rotationWarnMinutes={rotationWarnMinutes}
-        wallMode={wallMode}
-        onlyPaused={onlyPaused}
-        setOnlyPaused={setOnlyPaused}
-        showSkipUI={showSkipUI}
-        visibleStaff={visibleStaff}
-        currentBlockId={currentBlockId}
-        blockAssignments={blockAssignments}
-        postes={postes}
-        canEdit={canEdit}
-        pauseTakenAt={pauseTakenAt}
-        pauseDurationMinutes={pauseDurationMinutes}
-        returnAlertUntil={returnAlertUntil}
-        currentSkipMap={currentSkipMap}
-        rotationLocked={rotationLocked}
-        rotationImminent={rotationImminent}
-        isPauseDue={isPauseDue}
-        canReturnFromPause={canReturnFromPause}
-        setAssignment={setAssignment}
-        returnFromPause={returnFromPause}
-        toggleSkipRotation={toggleSkipRotation}
-      />
+      <div className="card" style={ui.panel}>
+        <div className="sectionHeader">
+          <h2>Cartes préparateurs (bloc en cours : {blockLabel})</h2>
+          <p className="muted">
+            0 → {rotationMinutes - rotationWarnMinutes} min : Poste •{" "}
+            {rotationMinutes - rotationWarnMinutes} → {rotationMinutes} : Imminente • ≥{" "}
+            {rotationMinutes} : Rotation obligatoire
+          </p>
+
+          <div className="row noPrint" style={{ marginTop: 10 }}>
+            <label
+              className="pill"
+              style={{
+                cursor: "pointer",
+                userSelect: "none",
+                ...ui.topStat,
+                borderRadius: 12,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={onlyPaused}
+                onChange={(e) => setOnlyPaused(e.target.checked)}
+              />
+              <span style={{ marginLeft: 8 }}>Voir seulement ceux en pause</span>
+            </label>
+
+            {showSkipUI && (
+              <span className="muted small">
+                Skip rotation = <b>garde le poste</b> sur ce passage.
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="cardsGrid">
+          {visibleStaff.map((nom) => {
+            const poste = normalizePoste(blockAssignments[nom]);
+            const meta = posteMeta(poste);
+            const pauseDue = isPauseDue(nom);
+
+            const started = pauseTakenAt?.[nom];
+            const durMs = (Number(pauseDurationMinutes) || 30) * 60000;
+            const pauseEnded = poste === "PAUSE" && started && Date.now() - started >= durMs;
+
+            const justReturned = (returnAlertUntil?.[nom] || 0) > Date.now();
+            const isSkipped = !!currentSkipMap?.[nom];
+
+            const cardState = rotationLocked
+              ? "danger"
+              : pauseDue || rotationImminent
+              ? "warn"
+              : poste && poste !== "PAUSE"
+              ? "info"
+              : "idle";
+
+            return (
+              <div
+                key={nom}
+                className={`cardItem ${cardState}`}
+                style={{
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.09)",
+                  background: "rgba(255,255,255,0.02)",
+                  boxShadow: "0 6px 18px rgba(0,0,0,0.12)",
+                }}
+              >
+                <div className="cardTop">
+                  <div className="cardName">{nom}</div>
+
+                  {poste ? (
+                    <div className="cardPoste">
+                      <span className="posteIcon">{meta.icon}</span>
+                      <span className="posteLabel">{meta.label}</span>
+                    </div>
+                  ) : (
+                    <div className="cardPoste muted">—</div>
+                  )}
+                </div>
+
+                <div className="cardMid">
+                  {pauseDue && (
+                    <div className="cardAlert">
+                      <span className="badge warn">☕ Pause à prendre</span>
+                    </div>
+                  )}
+
+                  {pauseEnded && (
+                    <div className="cardAlert">
+                      <span className="badge danger">✅ Pause terminée</span>
+                    </div>
+                  )}
+
+                  {justReturned && (
+                    <div className="cardAlert">
+                      <span className="badge info">↩ Retour</span>
+                    </div>
+                  )}
+
+                  {showSkipUI && isSkipped && poste && poste !== "PAUSE" && (
+                    <div className="cardAlert">
+                      <span className="badge info">⏭️ Skip rotation</span>
+                    </div>
+                  )}
+
+                  {!pauseDue && rotationLocked && poste && poste !== "PAUSE" && !isSkipped && (
+                    <div className="cardAlert">
+                      <span className="badge danger">🔄 ROTATION</span>
+                    </div>
+                  )}
+
+                  {!pauseDue &&
+                    !rotationLocked &&
+                    rotationImminent &&
+                    poste &&
+                    poste !== "PAUSE" &&
+                    !isSkipped && (
+                      <div className="cardAlert">
+                        <span className="badge warn">⚠️ Rotation imminente</span>
+                      </div>
+                    )}
+                </div>
+
+                {canEdit && (
+                  <div className="cardBottom noPrint">
+                    <div className="cardBottomRow" style={{ alignItems: "center" }}>
+                      <select
+                        value={blockAssignments[nom] || ""}
+                        onChange={(e) =>
+                          setAssignment(String(currentBlockId), nom, e.target.value)
+                        }
+                        title="Changer de poste (urgence possible)"
+                        style={{ ...ui.select, padding: "8px 10px" }}
+                      >
+                        <option value="" style={ui.option}>
+                          --
+                        </option>
+                        {(postes || []).map((p) => (
+                          <option key={p} value={p} style={ui.option}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+
+                      {canReturnFromPause(nom) ? (
+                        <button
+                          className="btn mini"
+                          onClick={() => returnFromPause(String(currentBlockId), nom)}
+                          title="Retour au poste précédent (même bloc)"
+                          style={{
+                            ...ui.btnGhost,
+                            padding: "8px 10px",
+                            borderRadius: 8,
+                            width: "auto",
+                          }}
+                          type="button"
+                        >
+                          ↩
+                        </button>
+                      ) : (
+                        <button
+                          className="btn mini"
+                          onClick={() => setAssignment(String(currentBlockId), nom, "PAUSE")}
+                          title="Mettre directement en PAUSE"
+                          style={{
+                            ...ui.btnGhost,
+                            padding: "8px 10px",
+                            borderRadius: 8,
+                            width: "auto",
+                          }}
+                          type="button"
+                        >
+                          ☕
+                        </button>
+                      )}
+                    </div>
+
+                    {/* ✅ Skip rotation */}
+                    {showSkipUI && poste && poste !== "PAUSE" && (
+                      <label
+                        className="skipRow"
+                        style={{
+                          marginTop: 10,
+                          cursor: "pointer",
+                          userSelect: "none",
+                          display: "flex",
+                          alignItems: "center",
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          background: "rgba(255,255,255,0.02)",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!isSkipped}
+                          onChange={() => toggleSkipRotation(String(currentBlockId), nom)}
+                        />
+                        <span style={{ marginLeft: 10 }}>
+                          ⏭️ Skip rotation (garde son poste)
+                        </span>
+                      </label>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {!wallMode && (
+          <div className="miniNote muted noPrint">
+            Astuce : en urgence tu peux changer un poste à tout moment.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
