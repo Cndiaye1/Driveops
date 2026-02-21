@@ -1,26 +1,26 @@
 // src/components/cockpit/CockpitStaffCard.jsx
 import React from "react";
-import { normalizePoste, posteMeta } from "./cockpitUi";
+import { normalizePoste, posteMeta } from "./posteMeta";
 
 export default function CockpitStaffCard({
   nom,
-  ui,
-  canEdit,
-  postes,
   currentBlockId,
   blockAssignments,
-  setAssignment,
+  postes,
+  ui,
+  canEdit,
   pauseTakenAt,
   pauseDurationMinutes,
   returnAlertUntil,
-  canReturnFromPause,
-  returnFromPause,
-  showSkipUI,
   currentSkipMap,
-  toggleSkipRotation,
-  isPauseDue,
-  rotationImminent,
+  showSkipUI,
   rotationLocked,
+  rotationImminent,
+  isPauseDue,
+  canReturnFromPause,
+  setAssignment,
+  returnFromPause,
+  toggleSkipRotation,
 }) {
   const poste = normalizePoste(blockAssignments[nom]);
   const meta = posteMeta(poste);
