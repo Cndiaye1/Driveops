@@ -1,4 +1,3 @@
-// src/pages/Admin.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../services/supabaseClient";
 import { useDriveStore } from "../store/useDriveStore";
@@ -7,282 +6,6 @@ function shortUuid(u) {
   if (!u) return "";
   return `${u.slice(0, 8)}…${u.slice(-6)}`;
 }
-
-function chipStyle(kind = "default") {
-  const map = {
-    default: {
-      background: "rgba(148,163,184,0.12)",
-      color: "#cbd5e1",
-      border: "1px solid rgba(148,163,184,0.22)",
-    },
-    success: {
-      background: "rgba(34,197,94,0.12)",
-      color: "#86efac",
-      border: "1px solid rgba(34,197,94,0.22)",
-    },
-    danger: {
-      background: "rgba(239,68,68,0.12)",
-      color: "#fca5a5",
-      border: "1px solid rgba(239,68,68,0.22)",
-    },
-    warn: {
-      background: "rgba(245,158,11,0.12)",
-      color: "#fcd34d",
-      border: "1px solid rgba(245,158,11,0.22)",
-    },
-    info: {
-      background: "rgba(59,130,246,0.12)",
-      color: "#93c5fd",
-      border: "1px solid rgba(59,130,246,0.22)",
-    },
-    purple: {
-      background: "rgba(168,85,247,0.12)",
-      color: "#d8b4fe",
-      border: "1px solid rgba(168,85,247,0.22)",
-    },
-  };
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "6px 10px",
-    borderRadius: 999,
-    fontSize: 12,
-    fontWeight: 700,
-    ...map[kind],
-  };
-}
-
-const ui = {
-  page: {
-    padding: 16,
-    maxWidth: 1180,
-    margin: "0 auto",
-    color: "#eef2ff",
-  },
-
-  panel: {
-    border: "1px solid rgba(255,255,255,0.10)",
-    borderRadius: 16,
-    background: "rgba(10,14,24,0.82)",
-    backdropFilter: "blur(8px)",
-    padding: 14,
-    boxShadow: "0 8px 30px rgba(0,0,0,0.22)",
-  },
-
-  sectionTitle: {
-    margin: 0,
-    fontSize: 18,
-    fontWeight: 800,
-    letterSpacing: 0.2,
-  },
-
-  muted: {
-    opacity: 0.78,
-    fontSize: 13,
-  },
-
-  tiny: {
-    opacity: 0.68,
-    fontSize: 12,
-  },
-
-  topRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "flex-start",
-    flexWrap: "wrap",
-  },
-
-  actionsRow: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-    alignItems: "center",
-  },
-
-  button: {
-    minHeight: 38,
-    padding: "0 12px",
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.06)",
-    color: "#eef2ff",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-
-  buttonPrimary: {
-    minHeight: 40,
-    padding: "0 14px",
-    borderRadius: 10,
-    border: "1px solid rgba(59,130,246,0.35)",
-    background: "rgba(59,130,246,0.18)",
-    color: "#dbeafe",
-    cursor: "pointer",
-    fontWeight: 700,
-  },
-
-  buttonDanger: {
-    minHeight: 38,
-    padding: "0 12px",
-    borderRadius: 10,
-    border: "1px solid rgba(239,68,68,0.30)",
-    background: "rgba(239,68,68,0.12)",
-    color: "#fecaca",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-
-  input: {
-    width: "100%",
-    minHeight: 40,
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(10,14,24,0.9)",
-    color: "#eef2ff",
-    padding: "0 12px",
-    outline: "none",
-    boxSizing: "border-box",
-  },
-
-  // ✅ important: select fermé en dark, options lisibles en blanc/noir
-  select: {
-    width: "100%",
-    minHeight: 40,
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(10,14,24,0.9)",
-    color: "#eef2ff",
-    padding: "0 12px",
-    outline: "none",
-    boxSizing: "border-box",
-  },
-
-  // ✅ pour Windows/Chrome dropdown natif
-  option: {
-    background: "#ffffff",
-    color: "#111827",
-  },
-
-  label: {
-    display: "grid",
-    gap: 6,
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#dbe4ff",
-  },
-
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-    gap: 10,
-  },
-
-  grid3: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 10,
-  },
-
-  notice: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.10)",
-    background: "rgba(255,255,255,0.03)",
-  },
-
-  messageBox: (type) => ({
-    marginTop: 10,
-    padding: 12,
-    borderRadius: 12,
-    border:
-      type === "error"
-        ? "1px solid rgba(239,68,68,0.28)"
-        : "1px solid rgba(34,197,94,0.28)",
-    background:
-      type === "error"
-        ? "rgba(239,68,68,0.08)"
-        : "rgba(34,197,94,0.08)",
-    color: type === "error" ? "#fecaca" : "#dcfce7",
-  }),
-
-  subHeaderRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-
-  memberCard: {
-    border: "1px solid rgba(255,255,255,0.10)",
-    borderRadius: 14,
-    padding: 12,
-    background: "rgba(255,255,255,0.03)",
-    display: "grid",
-    gap: 10,
-  },
-
-  memberTop: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 10,
-    alignItems: "flex-start",
-    flexWrap: "wrap",
-  },
-
-  memberName: {
-    fontWeight: 800,
-    fontSize: 15,
-    color: "#f8fafc",
-    lineHeight: 1.25,
-  },
-
-  memberMeta: {
-    opacity: 0.78,
-    fontSize: 12,
-    marginTop: 4,
-  },
-
-  memberControls: {
-    display: "grid",
-    gridTemplateColumns: "minmax(180px, 220px) 1fr",
-    gap: 10,
-    alignItems: "end",
-  },
-
-  memberControlsMobileSafe: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: 10,
-    alignItems: "end",
-  },
-
-  rowRightButtons: {
-    display: "flex",
-    gap: 8,
-    justifyContent: "flex-end",
-    flexWrap: "wrap",
-    alignItems: "center",
-  },
-
-  divider: {
-    height: 1,
-    background: "rgba(255,255,255,0.08)",
-    margin: "10px 0",
-  },
-
-  kpiRow: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-    alignItems: "center",
-    marginTop: 10,
-  },
-};
 
 export default function Admin() {
   const siteCode = useDriveStore((s) => s.siteCode);
@@ -305,12 +28,12 @@ export default function Admin() {
 
   const [sessionInfo, setSessionInfo] = useState({ email: "", id: "" });
 
-  // ---- Global admin / multi-sites (optionnel, si endpoint dispo)
+  // ---- Global admin / multi-sites (optionnel)
   const [isGlobalAdmin, setIsGlobalAdmin] = useState(false);
   const [sites, setSites] = useState([]);
   const [sitesLoading, setSitesLoading] = useState(false);
 
-  // site cible pour l’admin (ne change pas automatiquement le site “opérationnel” du store)
+  // site cible admin (indépendant du site opérationnel tant que non cliqué "Utiliser dans l'app")
   const [adminSite, setAdminSite] = useState("");
 
   // ---- Create site (optionnel)
@@ -330,12 +53,143 @@ export default function Admin() {
 
   const canManage = useMemo(() => isAdmin || isGlobalAdmin, [isAdmin, isGlobalAdmin]);
 
+  // ---------------- UI (simple + dark + lisibilité selects)
+  const ui = {
+    page: {
+      padding: 16,
+      maxWidth: 980,
+      margin: "0 auto",
+      color: "#e5e7eb",
+    },
+    card: {
+      border: "1px solid rgba(255,255,255,0.10)",
+      borderRadius: 14,
+      padding: 14,
+      background: "linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.015))",
+      boxShadow: "0 8px 20px rgba(0,0,0,0.16)",
+    },
+    sectionTitle: {
+      margin: 0,
+      fontSize: 18,
+      fontWeight: 800,
+      letterSpacing: "0.2px",
+    },
+    label: {
+      display: "block",
+      fontSize: 12,
+      opacity: 0.8,
+      marginBottom: 6,
+      fontWeight: 600,
+    },
+    input: {
+      width: "100%",
+      background: "#0f172a",
+      color: "#e5e7eb",
+      border: "1px solid rgba(255,255,255,0.14)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      outline: "none",
+      boxSizing: "border-box",
+    },
+    select: {
+      width: "100%",
+      background: "#0f172a",
+      color: "#e5e7eb",
+      border: "1px solid rgba(255,255,255,0.14)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      outline: "none",
+      boxSizing: "border-box",
+    },
+    option: {
+      backgroundColor: "#0f172a",
+      color: "#e5e7eb",
+    },
+    btn: {
+      background: "#1f2937",
+      color: "#f9fafb",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    btnPrimary: {
+      background: "linear-gradient(180deg, #2563eb, #1d4ed8)",
+      color: "#fff",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      cursor: "pointer",
+      fontWeight: 700,
+      boxShadow: "0 8px 18px rgba(37,99,235,0.25)",
+    },
+    btnDanger: {
+      background: "rgba(127,29,29,0.22)",
+      color: "#fecaca",
+      border: "1px solid rgba(239,68,68,0.35)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    btnGhost: {
+      background: "rgba(255,255,255,0.03)",
+      color: "#f3f4f6",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "10px 12px",
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    badge: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "5px 10px",
+      borderRadius: 999,
+      fontSize: 12,
+      border: "1px solid rgba(255,255,255,0.10)",
+      background: "rgba(255,255,255,0.03)",
+      whiteSpace: "nowrap",
+    },
+    muted: { opacity: 0.75, fontSize: 12 },
+    grid2: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10,
+    },
+    grid3: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 160px",
+      gap: 10,
+    },
+    row: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap",
+    },
+    memberRow: {
+      display: "grid",
+      gridTemplateColumns: "1fr 200px 220px",
+      gap: 10,
+      alignItems: "center",
+      border: "1px solid rgba(255,255,255,0.10)",
+      borderRadius: 12,
+      padding: 10,
+      background: "rgba(255,255,255,0.015)",
+    },
+  };
+
+  // Responsive helper (simple)
+  const isNarrow = typeof window !== "undefined" ? window.innerWidth < 760 : false;
+
   // adminSite init/sync
   useEffect(() => {
     setAdminSite((prev) => prev || normalizedSite || "");
   }, [normalizedSite]);
 
-  // si pas global, on force adminSite = site du store
   useEffect(() => {
     if (!isGlobalAdmin) setAdminSite(normalizedSite || "");
   }, [isGlobalAdmin, normalizedSite]);
@@ -407,8 +261,8 @@ export default function Admin() {
     setSitesLoading(true);
     try {
       const j = await callApi("/api/admin/list-sites", { includeSiteHeader: false });
-
       const list = j?.sites || j?.data || [];
+
       if (Array.isArray(list)) {
         setSites(list);
         setIsGlobalAdmin(true);
@@ -417,7 +271,6 @@ export default function Admin() {
         setIsGlobalAdmin(false);
       }
     } catch {
-      // endpoint absent / non autorisé => on reste en mono-site sans casser
       setSites([]);
       setIsGlobalAdmin(false);
     } finally {
@@ -446,7 +299,7 @@ export default function Admin() {
         },
       });
 
-      setMsg({ type: "success", text: `Site créé / existant : ${code}` });
+      setMsg({ type: "success", text: `Site prêt : ${code}` });
       setSiteForm({ code: "", name: "" });
       await loadSites();
       setAdminSite(code);
@@ -493,13 +346,11 @@ export default function Admin() {
     })();
   }, []);
 
-  // charge list-sites (si dispo)
   useEffect(() => {
     loadSites();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // recharge les membres quand le site cible change
   useEffect(() => {
     loadMembers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -573,7 +424,7 @@ export default function Admin() {
     if (!["admin", "manager", "user"].includes(role)) return;
 
     if (isLastAdmin(userId) && role !== "admin") {
-      return setMsg({ type: "error", text: "Impossible : c’est le dernier admin du site." });
+      return setMsg({ type: "error", text: "Impossible : dernier admin du site." });
     }
 
     const targetSite = (adminSite || "").trim().toLowerCase();
@@ -625,12 +476,12 @@ export default function Admin() {
     }
 
     if (isLastAdmin(userId)) {
-      return setMsg({ type: "error", text: "Impossible : c’est le dernier admin du site." });
+      return setMsg({ type: "error", text: "Impossible : dernier admin du site." });
     }
 
     const targetSite = (adminSite || "").trim().toLowerCase();
     const ok = window.confirm(
-      `Supprimer le membre "${memberCode || shortUuid(userId)}" du site ${targetSite} ?`
+      `Supprimer "${memberCode || shortUuid(userId)}" du site ${targetSite} ?`
     );
     if (!ok) return;
 
@@ -642,7 +493,7 @@ export default function Admin() {
         site: targetSite,
         body: { siteCode: targetSite, userId },
       });
-      setMsg({ type: "success", text: "Membre supprimé du site." });
+      setMsg({ type: "success", text: "Membre supprimé." });
       await loadMembers();
     } catch (e) {
       setMsg({ type: "error", text: e?.message || "Erreur remove-member" });
@@ -652,191 +503,144 @@ export default function Admin() {
   }
 
   const targetSiteLabel = (adminSite || "").trim().toLowerCase() || "—";
-  const roleLabel = String(memberRole || "").toLowerCase();
-
-  function roleKind(r) {
-    if (r === "admin") return "danger";
-    if (r === "manager") return "warn";
-    if (r === "user") return "info";
-    return "default";
-  }
 
   return (
     <div style={ui.page}>
-      {/* Header */}
-      <div style={{ ...ui.panel, padding: 16 }}>
-        <div style={ui.topRow}>
-          <div style={{ minWidth: 260, flex: "1 1 420px" }}>
-            <h2 style={{ margin: 0, fontSize: 24, fontWeight: 900, letterSpacing: 0.2 }}>
-              🛠️ Administration
-            </h2>
+      {/* Header compact */}
+      <div style={{ ...ui.card, marginBottom: 14 }}>
+        <div style={{ ...ui.row, justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 24, fontWeight: 900 }}>⚙️ Administration</h2>
 
-            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={chipStyle("info")}>Site app: {normalizedSite || "—"}</span>
-              <span style={chipStyle(roleKind(roleLabel))}>Rôle: {memberRole || "—"}</span>
-              {isGlobalAdmin ? <span style={chipStyle("purple")}>🌍 Global admin</span> : null}
+            <div style={{ ...ui.row, marginTop: 8 }}>
+              <span style={ui.badge}>
+                Site app: <b>{normalizedSite || "—"}</b>
+              </span>
+              <span style={ui.badge}>
+                Rôle: <b>{memberRole || "—"}</b>
+              </span>
+              {isGlobalAdmin && <span style={ui.badge}>🌍 Global admin</span>}
             </div>
 
-            {/* Détails techniques repliés (propre, sans exposer au premier regard) */}
-            <details style={{ marginTop: 10 }}>
-              <summary style={{ cursor: "pointer", opacity: 0.75, fontSize: 12 }}>
-                Détails techniques (session / API)
-              </summary>
-              <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
-                <div style={ui.tiny}>
-                  Session: <b>{sessionInfo.email || "—"}</b> · <span>{shortUuid(sessionInfo.id)}</span>
-                </div>
-                <div style={ui.tiny}>
-                  API base: <b>{API_BASE || "(same origin)"}</b>
-                </div>
+            {sessionInfo.email ? (
+              <div style={{ ...ui.muted, marginTop: 8 }}>
+                Connecté : <b>{sessionInfo.email}</b>
               </div>
-            </details>
+            ) : null}
           </div>
 
-          <div style={ui.actionsRow}>
-            <button type="button" onClick={goSetup} style={ui.button}>
+          <div style={{ ...ui.row }}>
+            <button type="button" onClick={goSetup} style={ui.btnGhost}>
               ← Setup
             </button>
-            <button type="button" onClick={goCockpit} style={ui.button}>
+            <button type="button" onClick={goCockpit} style={ui.btnGhost}>
               Cockpit
             </button>
-            <button type="button" onClick={logout} style={ui.buttonDanger}>
+            <button type="button" onClick={logout} style={ui.btnDanger}>
               Déconnexion
             </button>
           </div>
         </div>
       </div>
 
-      {/* Bloc Site / Multi-site */}
-      <div style={{ ...ui.panel, marginTop: 14 }}>
-        <div style={ui.subHeaderRow}>
-          <div>
-            <h3 style={ui.sectionTitle}>🏢 Site cible (Admin)</h3>
-            <div style={ui.muted}>
-              Gère les membres du site sélectionné sans changer automatiquement le site opérationnel.
-            </div>
-          </div>
+      {/* Site cible */}
+      <div style={{ ...ui.card, marginBottom: 14 }}>
+        <div style={{ ...ui.row, justifyContent: "space-between", marginBottom: 10 }}>
+          <h3 style={ui.sectionTitle}>🏪 Site cible</h3>
+          <span style={ui.badge}>Site actuel : {targetSiteLabel}</span>
+        </div>
 
-          <div style={ui.kpiRow}>
-            <span style={chipStyle("info")}>Cible: {targetSiteLabel}</span>
-            {normalizedSite && targetSiteLabel !== normalizedSite ? (
-              <span style={chipStyle("warn")}>Différent du site de l’app</span>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isNarrow ? "1fr" : "1fr auto auto",
+            gap: 10,
+            alignItems: "end",
+          }}
+        >
+          <div>
+            <label style={ui.label}>Choisir un site</label>
+            {isGlobalAdmin && sites.length > 0 ? (
+              <select
+                value={targetSiteLabel}
+                onChange={(e) => setAdminSite(String(e.target.value || "").trim().toLowerCase())}
+                style={ui.select}
+              >
+                {sites.map((s) => {
+                  const code = String(s.site_code || s.code || "").trim().toLowerCase();
+                  const name = String(s.name || "").trim();
+                  return (
+                    <option key={code} value={code} style={ui.option}>
+                      {name ? `${name} (${code})` : code}
+                    </option>
+                  );
+                })}
+              </select>
             ) : (
-              <span style={chipStyle("success")}>Même site que l’app</span>
+              <input value={targetSiteLabel} readOnly style={ui.input} />
             )}
           </div>
+
+          <button type="button" onClick={loadMembers} disabled={membersLoading} style={ui.btn}>
+            {membersLoading ? "..." : "Voir membres"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSiteCode?.(targetSiteLabel)}
+            disabled={!targetSiteLabel || targetSiteLabel === "—"}
+            title="Utiliser ce site dans Setup/Cockpit"
+            style={ui.btnPrimary}
+          >
+            Utiliser dans l’app
+          </button>
         </div>
 
-        <div style={ui.divider} />
-
-        <div style={ui.grid3}>
-          <div>
-            <label style={ui.label}>
-              {isGlobalAdmin && sites.length > 0 ? "Choisir un site" : "Site cible"}
-              {isGlobalAdmin && sites.length > 0 ? (
-                <select
-                  value={targetSiteLabel}
-                  onChange={(e) => setAdminSite(String(e.target.value || "").trim().toLowerCase())}
-                  style={ui.select}
-                >
-                  {sites.map((s) => {
-                    const code = String(s.site_code || s.code || "").trim().toLowerCase();
-                    const name = String(s.name || "").trim();
-                    return (
-                      <option key={code} value={code} style={ui.option}>
-                        {code}
-                        {name ? ` — ${name}` : ""}
-                      </option>
-                    );
-                  })}
-                </select>
-              ) : (
-                <div style={{ ...ui.notice, padding: 10 }}>
-                  <div style={{ fontWeight: 800 }}>{targetSiteLabel}</div>
-                  <div style={ui.tiny}>
-                    {isGlobalAdmin
-                      ? "Aucun site renvoyé."
-                      : "Mode mono-site (list-sites indisponible ou non autorisé)."}
-                  </div>
-                </div>
-              )}
-            </label>
-          </div>
-
-          <div>
-            <label style={ui.label}>Actions site</label>
-            <div style={ui.actionsRow}>
-              <button type="button" onClick={loadSites} disabled={sitesLoading} style={ui.button}>
-                {sitesLoading ? "..." : "Tester list-sites"}
-              </button>
-
-              <button type="button" onClick={loadMembers} disabled={membersLoading} style={ui.button}>
-                {membersLoading ? "..." : "Voir membres"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSiteCode?.(targetSiteLabel)}
-                disabled={!targetSiteLabel || targetSiteLabel === "—"}
-                title="Mettre ce site comme site de l’app (Setup/Cockpit)"
-                style={ui.buttonPrimary}
-              >
-                Utiliser dans l’app
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label style={ui.label}>Statut admin</label>
-            <div style={{ ...ui.notice, padding: 10 }}>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <span style={chipStyle(canManage ? "success" : "danger")}>
-                  {canManage ? "Accès admin OK" : "Accès limité"}
-                </span>
-                <span style={chipStyle(isGlobalAdmin ? "purple" : "default")}>
-                  {isGlobalAdmin ? "Multi-sites actif" : "Mono-site"}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
+        {/* Create site (global admin only) */}
         {isGlobalAdmin ? (
           <form onSubmit={createSite} style={{ marginTop: 14 }}>
-            <div style={{ ...ui.notice }}>
-              <div style={{ fontWeight: 800, marginBottom: 8 }}>➕ Créer un site</div>
+            <div
+              style={{
+                borderTop: "1px solid rgba(255,255,255,0.08)",
+                paddingTop: 14,
+                display: "grid",
+                gap: 10,
+              }}
+            >
+              <div style={{ fontWeight: 700 }}>➕ Créer un site</div>
 
-              <div style={ui.grid3}>
-                <label style={ui.label}>
-                  Code site
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isNarrow ? "1fr" : "1fr 1fr 160px",
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <label style={ui.label}>Code</label>
                   <input
                     value={siteForm.code}
                     onChange={(e) => setSiteForm((s) => ({ ...s, code: e.target.value }))}
                     placeholder="ex: melun"
                     style={ui.input}
                   />
-                </label>
+                </div>
 
-                <label style={ui.label}>
-                  Nom (optionnel)
+                <div>
+                  <label style={ui.label}>Nom (optionnel)</label>
                   <input
                     value={siteForm.name}
                     onChange={(e) => setSiteForm((s) => ({ ...s, name: e.target.value }))}
                     placeholder="ex: Melun"
                     style={ui.input}
                   />
-                </label>
+                </div>
 
-                <div style={{ display: "grid", alignItems: "end" }}>
-                  <button type="submit" disabled={siteCreating} style={ui.buttonPrimary}>
-                    {siteCreating ? "..." : "Créer le site"}
+                <div style={{ alignSelf: "end" }}>
+                  <button type="submit" disabled={siteCreating} style={{ ...ui.btnPrimary, width: "100%" }}>
+                    {siteCreating ? "..." : "Créer"}
                   </button>
                 </div>
-              </div>
-
-              <div style={{ ...ui.tiny, marginTop: 8 }}>
-                Si l’endpoint <code>/api/admin/site-create</code> n’existe pas encore, cette action ne
-                marchera pas (la page reste stable).
               </div>
             </div>
           </form>
@@ -844,63 +648,55 @@ export default function Admin() {
       </div>
 
       {!canManage && (
-        <div style={{ ...ui.panel, marginTop: 14, borderColor: "rgba(245,158,11,0.22)" }}>
-          <div style={{ color: "#fde68a", fontWeight: 700 }}>
-            ⚠️ Accès limité
-          </div>
-          <div style={{ marginTop: 6, ...ui.muted }}>
-            Tu dois être <b>admin</b> (ou <b>global admin</b>) pour créer / modifier / supprimer des membres.
-          </div>
+        <div style={{ ...ui.card, marginBottom: 14, borderColor: "rgba(245,158,11,0.3)" }}>
+          <b>Accès limité.</b> Tu dois être <b>admin</b> pour gérer les membres.
         </div>
       )}
 
-      {/* Formulaire membre */}
+      {/* Form membre */}
       <form
         onSubmit={onSubmit}
         style={{
-          ...ui.panel,
-          marginTop: 16,
+          ...ui.card,
+          marginBottom: 14,
           opacity: canManage ? 1 : 0.6,
           pointerEvents: canManage ? "auto" : "none",
         }}
       >
-        <div style={ui.subHeaderRow}>
-          <div>
-            <h3 style={ui.sectionTitle}>👤 Créer / mettre à jour un membre</h3>
-            <div style={ui.muted}>Création ou mise à jour via CODE + PIN sur le site cible.</div>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={chipStyle("info")}>Site cible: {targetSiteLabel}</span>
-            <span style={chipStyle("default")}>Rôles: user / manager / admin</span>
-          </div>
+        <div style={{ ...ui.row, justifyContent: "space-between", marginBottom: 10 }}>
+          <h3 style={ui.sectionTitle}>👤 Créer / mettre à jour un membre</h3>
+          <span style={ui.badge}>Site : {targetSiteLabel}</span>
         </div>
 
-        <div style={ui.divider} />
-
-        <div style={ui.grid2}>
-          <label style={ui.label}>
-            CODE
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isNarrow ? "1fr" : "1fr 1fr",
+            gap: 10,
+          }}
+        >
+          <div>
+            <label style={ui.label}>CODE</label>
             <input
               value={form.code}
               onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))}
               placeholder="ex: p01 / bamba / cheikh"
               style={ui.input}
             />
-          </label>
+          </div>
 
-          <label style={ui.label}>
-            PIN
+          <div>
+            <label style={ui.label}>PIN</label>
             <input
               value={form.pin}
               onChange={(e) => setForm((f) => ({ ...f, pin: e.target.value }))}
               placeholder="ex: 1234"
               style={ui.input}
             />
-          </label>
+          </div>
 
-          <label style={ui.label}>
-            Rôle
+          <div>
+            <label style={ui.label}>Rôle</label>
             <select
               value={form.role}
               onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
@@ -910,144 +706,205 @@ export default function Admin() {
               <option value="manager" style={ui.option}>manager</option>
               <option value="admin" style={ui.option}>admin</option>
             </select>
-          </label>
+          </div>
 
-          <label style={ui.label}>
-            Nom (optionnel)
+          <div>
+            <label style={ui.label}>Nom (optionnel)</label>
             <input
               value={form.fullName}
               onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))}
               placeholder="ex: Bamba"
               style={ui.input}
             />
-          </label>
+          </div>
         </div>
 
-        <button disabled={loading} style={{ ...ui.buttonPrimary, marginTop: 12, width: "100%" }}>
+        <button disabled={loading} style={{ ...ui.btnPrimary, marginTop: 12, width: "100%" }}>
           {loading ? "..." : "Créer / Mettre à jour"}
         </button>
       </form>
 
-      {/* Message global */}
+      {/* Message */}
       {msg && (
-        <div style={ui.messageBox(msg.type)}>
+        <div
+          style={{
+            ...ui.card,
+            marginBottom: 14,
+            borderColor:
+              msg.type === "error" ? "rgba(239,68,68,0.35)" : "rgba(34,197,94,0.25)",
+            background:
+              msg.type === "error"
+                ? "rgba(127,29,29,0.08)"
+                : "rgba(22,101,52,0.08)",
+          }}
+        >
           <b>{msg.type === "error" ? "Erreur" : "OK"}</b> — {msg.text}
         </div>
       )}
 
-      {/* Liste des membres */}
-      <div style={{ ...ui.panel, marginTop: 16 }}>
-        <div style={ui.subHeaderRow}>
+      {/* Liste membres */}
+      <div style={ui.card}>
+        <div style={{ ...ui.row, justifyContent: "space-between", marginBottom: 10 }}>
           <div>
-            <h3 style={ui.sectionTitle}>👥 Membres du site</h3>
-            <div style={ui.muted}>Recherche, rôles, reset PIN, suppression.</div>
+            <h3 style={ui.sectionTitle}>👥 Membres</h3>
+            <div style={{ ...ui.row, marginTop: 8 }}>
+              <span style={ui.badge}>Site : {targetSiteLabel}</span>
+              <span style={ui.badge}>Admins : {adminCount}</span>
+              <span style={ui.badge}>Total : {members.length}</span>
+            </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: isNarrow ? "1fr" : "260px auto",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Recherche (code / rôle / nom)…"
-              style={{ ...ui.input, minWidth: 260 }}
+              placeholder="Recherche…"
+              style={{ ...ui.input, minWidth: isNarrow ? 0 : 220 }}
             />
-            <button type="button" onClick={loadMembers} disabled={membersLoading} style={ui.button}>
+            <button type="button" onClick={loadMembers} disabled={membersLoading} style={ui.btn}>
               {membersLoading ? "..." : "Rafraîchir"}
             </button>
           </div>
         </div>
 
-        <div style={ui.kpiRow}>
-          <span style={chipStyle("info")}>Site: {targetSiteLabel}</span>
-          <span style={chipStyle("danger")}>Admins: {adminCount}</span>
-          <span style={chipStyle("default")}>Total: {(members || []).length}</span>
-          {q ? <span style={chipStyle("warn")}>Filtrés: {(filtered || []).length}</span> : null}
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
           {(filtered || []).map((m) => {
             const uid = m.user_id;
             const rowBusy = !!actionLoading[uid];
             const role = String(m.role || "").toLowerCase();
-            const canDelete = canManage && !rowBusy && uid !== sessionInfo.id && !isLastAdmin(uid);
+
+            const createdLabel = m.created_at
+              ? new Date(m.created_at).toLocaleDateString()
+              : "";
 
             return (
               <div
                 key={`${m.site_code}:${uid}`}
                 style={{
-                  ...ui.memberCard,
+                  ...(isNarrow
+                    ? {
+                        border: "1px solid rgba(255,255,255,0.10)",
+                        borderRadius: 12,
+                        padding: 10,
+                        background: "rgba(255,255,255,0.015)",
+                        opacity: rowBusy ? 0.7 : 1,
+                      }
+                    : ui.memberRow),
                   opacity: rowBusy ? 0.7 : 1,
-                  borderColor: rowBusy
-                    ? "rgba(59,130,246,0.22)"
-                    : "rgba(255,255,255,0.10)",
                 }}
               >
-                <div style={ui.memberTop}>
-                  <div style={{ minWidth: 220, flex: "1 1 320px" }}>
-                    <div style={ui.memberName}>
-                      {m.member_code ? m.member_code : shortUuid(uid)}{" "}
-                      {m.full_name ? (
-                        <span style={{ opacity: 0.82, fontWeight: 600 }}>· {m.full_name}</span>
-                      ) : null}
+                {/* Col 1 : identité (sans UUID affiché) */}
+                <div style={isNarrow ? { marginBottom: 10 } : undefined}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ fontWeight: 800, fontSize: 15 }}>
+                      {m.member_code || "membre"}
                     </div>
 
-                    <div style={ui.memberMeta}>
-                      {m.created_at ? new Date(m.created_at).toLocaleString() : "—"} ·{" "}
-                      <span>{shortUuid(uid)}</span>
-                    </div>
+                    {m.full_name ? (
+                      <div style={{ opacity: 0.85, fontSize: 13 }}>{m.full_name}</div>
+                    ) : null}
+
+                    <span
+                      style={{
+                        ...ui.badge,
+                        fontSize: 11,
+                        padding: "3px 8px",
+                        background:
+                          role === "admin"
+                            ? "rgba(220,38,38,0.12)"
+                            : role === "manager"
+                            ? "rgba(59,130,246,0.12)"
+                            : "rgba(255,255,255,0.03)",
+                        borderColor:
+                          role === "admin"
+                            ? "rgba(220,38,38,0.30)"
+                            : role === "manager"
+                            ? "rgba(59,130,246,0.30)"
+                            : "rgba(255,255,255,0.10)",
+                      }}
+                    >
+                      {role}
+                    </span>
                   </div>
 
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    <span style={chipStyle(roleKind(role))}>{role || "—"}</span>
-                    {uid === sessionInfo.id ? <span style={chipStyle("default")}>Toi</span> : null}
-                    {isLastAdmin(uid) ? <span style={chipStyle("warn")}>⚠️ Dernier admin</span> : null}
-                  </div>
+                  {createdLabel ? (
+                    <div style={{ ...ui.muted, marginTop: 4 }}>Créé le {createdLabel}</div>
+                  ) : null}
                 </div>
 
-                <div style={ui.memberControlsMobileSafe}>
-                  <label style={{ ...ui.label, margin: 0 }}>
-                    Rôle
-                    <select
-                      value={role}
-                      disabled={!canManage || rowBusy}
-                      onChange={(e) => updateRole(uid, e.target.value)}
-                      title={!canManage ? "Accès admin requis" : ""}
-                      style={ui.select}
-                    >
-                      <option value="user" style={ui.option}>user</option>
-                      <option value="manager" style={ui.option}>manager</option>
-                      <option value="admin" style={ui.option}>admin</option>
-                    </select>
-                  </label>
+                {/* Col 2 : rôle */}
+                <div style={isNarrow ? { marginBottom: 10 } : undefined}>
+                  <label style={ui.label}>Rôle</label>
+                  <select
+                    value={role}
+                    disabled={!canManage || rowBusy}
+                    onChange={(e) => updateRole(uid, e.target.value)}
+                    title={!canManage ? "Accès admin requis" : ""}
+                    style={ui.select}
+                  >
+                    <option value="user" style={ui.option}>user</option>
+                    <option value="manager" style={ui.option}>manager</option>
+                    <option value="admin" style={ui.option}>admin</option>
+                  </select>
 
-                  <div style={ui.rowRightButtons}>
-                    <button
-                      type="button"
-                      disabled={!canManage || rowBusy}
-                      onClick={() => resetPin(uid, m.member_code)}
-                      style={ui.button}
-                    >
-                      {actionLoading[uid] === "pin" ? "..." : "Reset PIN"}
-                    </button>
+                  {isLastAdmin(uid) && (
+                    <div style={{ ...ui.muted, marginTop: 6, color: "#fca5a5" }}>
+                      ⚠️ Dernier admin
+                    </div>
+                  )}
+                </div>
 
-                    <button
-                      type="button"
-                      disabled={!canDelete}
-                      onClick={() => removeMember(uid, m.member_code)}
-                      style={ui.buttonDanger}
-                      title={uid === sessionInfo.id ? "Impossible de te supprimer toi-même" : ""}
-                    >
-                      {actionLoading[uid] === "delete" ? "..." : "Supprimer"}
-                    </button>
-                  </div>
+                {/* Col 3 : actions */}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    justifyContent: isNarrow ? "flex-start" : "flex-end",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={!canManage || rowBusy}
+                    onClick={() => resetPin(uid, m.member_code)}
+                    style={ui.btnGhost}
+                  >
+                    {actionLoading[uid] === "pin" ? "..." : "Reset PIN"}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!canManage || rowBusy || uid === sessionInfo.id || isLastAdmin(uid)}
+                    onClick={() => removeMember(uid, m.member_code)}
+                    title={uid === sessionInfo.id ? "Impossible de te supprimer toi-même" : ""}
+                    style={{
+                      ...ui.btnDanger,
+                      opacity:
+                        !canManage || rowBusy || uid === sessionInfo.id || isLastAdmin(uid)
+                          ? 0.55
+                          : 1,
+                      cursor:
+                        !canManage || rowBusy || uid === sessionInfo.id || isLastAdmin(uid)
+                          ? "not-allowed"
+                          : "pointer",
+                    }}
+                  >
+                    {actionLoading[uid] === "delete" ? "..." : "Supprimer"}
+                  </button>
                 </div>
               </div>
             );
           })}
 
           {!membersLoading && (!filtered || filtered.length === 0) && (
-            <div style={{ ...ui.notice, textAlign: "center", opacity: 0.85 }}>
-              Aucun membre trouvé.
-            </div>
+            <div style={{ ...ui.muted, padding: 8 }}>Aucun membre trouvé.</div>
           )}
         </div>
       </div>
