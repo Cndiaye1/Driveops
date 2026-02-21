@@ -8,193 +8,6 @@ function shortUuid(u) {
   return `${u.slice(0, 8)}…${u.slice(-6)}`;
 }
 
-const UI = {
-  page: {
-    padding: 16,
-    maxWidth: 980,
-    margin: "0 auto",
-    color: "#E8EEF8",
-  },
-  card: {
-    background: "rgba(8, 14, 28, 0.72)",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 14,
-    padding: 14,
-    boxShadow: "0 10px 30px rgba(0,0,0,0.18)",
-  },
-  sectionTitle: {
-    margin: 0,
-    fontSize: 18,
-    fontWeight: 800,
-    letterSpacing: 0.2,
-  },
-  sub: {
-    marginTop: 4,
-    opacity: 0.72,
-    fontSize: 12,
-  },
-  row: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    flexWrap: "wrap",
-  },
-  grid2: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-  },
-  grid3: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr 160px",
-    gap: 10,
-  },
-  label: {
-    display: "grid",
-    gap: 6,
-    fontSize: 12,
-    opacity: 0.9,
-  },
-  input: {
-    width: "100%",
-    height: 38,
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.03)",
-    color: "#EAF1FF",
-    padding: "0 12px",
-    outline: "none",
-  },
-  select: {
-    width: "100%",
-    height: 38,
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "#0B1220",
-    color: "#EAF1FF",
-    padding: "0 12px",
-    outline: "none",
-  },
-  btn: {
-    height: 36,
-    padding: "0 12px",
-    borderRadius: 10,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.03)",
-    color: "#EAF1FF",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-  btnPrimary: {
-    height: 38,
-    padding: "0 14px",
-    borderRadius: 10,
-    border: "1px solid rgba(59,130,246,0.45)",
-    background: "rgba(37, 99, 235, 0.20)",
-    color: "#EAF1FF",
-    cursor: "pointer",
-    fontWeight: 700,
-  },
-  btnDanger: {
-    height: 36,
-    padding: "0 12px",
-    borderRadius: 10,
-    border: "1px solid rgba(239,68,68,0.35)",
-    background: "rgba(239,68,68,0.12)",
-    color: "#FFD6D6",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-  btnGhost: {
-    height: 32,
-    padding: "0 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(255,255,255,0.02)",
-    color: "#DCE7FF",
-    cursor: "pointer",
-    fontWeight: 600,
-    fontSize: 12,
-  },
-  chip: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.1)",
-    background: "rgba(255,255,255,0.03)",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  chipGreen: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(34,197,94,0.25)",
-    background: "rgba(34,197,94,0.10)",
-    color: "#BBF7D0",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  chipPurple: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(168,85,247,0.25)",
-    background: "rgba(168,85,247,0.10)",
-    color: "#E9D5FF",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  chipRed: {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "4px 10px",
-    borderRadius: 999,
-    border: "1px solid rgba(239,68,68,0.25)",
-    background: "rgba(239,68,68,0.10)",
-    color: "#FECACA",
-    fontSize: 11,
-    fontWeight: 700,
-  },
-  divider: {
-    height: 1,
-    background: "rgba(255,255,255,0.08)",
-    margin: "12px 0",
-  },
-  msgOk: {
-    marginTop: 10,
-    padding: 10,
-    borderRadius: 10,
-    border: "1px solid rgba(34,197,94,0.25)",
-    background: "rgba(34,197,94,0.08)",
-    color: "#D1FAE5",
-    fontSize: 13,
-  },
-  msgErr: {
-    marginTop: 10,
-    padding: 10,
-    borderRadius: 10,
-    border: "1px solid rgba(239,68,68,0.25)",
-    background: "rgba(239,68,68,0.08)",
-    color: "#FECACA",
-    fontSize: 13,
-  },
-  smallMuted: {
-    fontSize: 11,
-    opacity: 0.65,
-  },
-};
-
-function OptionSafeStyle() {
-  // Petit helper visuel : certains navigateurs ignorent le style des <option>
-  // mais on garde au moins le select en fond sombre.
-  return null;
-}
-
 export default function Admin() {
   const siteCode = useDriveStore((s) => s.siteCode);
   const setSiteCode = useDriveStore((s) => s.setSiteCode);
@@ -221,7 +34,7 @@ export default function Admin() {
   const [sites, setSites] = useState([]);
   const [sitesLoading, setSitesLoading] = useState(false);
 
-  // site cible pour l’admin
+  // site cible pour l’admin (ne change pas automatiquement le site “opérationnel” du store)
   const [adminSite, setAdminSite] = useState("");
 
   // ---- Create site (optionnel)
@@ -246,6 +59,7 @@ export default function Admin() {
     setAdminSite((prev) => prev || normalizedSite || "");
   }, [normalizedSite]);
 
+  // si pas global, on force adminSite = site du store
   useEffect(() => {
     if (!isGlobalAdmin) setAdminSite(normalizedSite || "");
   }, [isGlobalAdmin, normalizedSite]);
@@ -317,6 +131,7 @@ export default function Admin() {
     setSitesLoading(true);
     try {
       const j = await callApi("/api/admin/list-sites", { includeSiteHeader: false });
+
       const list = j?.sites || j?.data || [];
       if (Array.isArray(list)) {
         setSites(list);
@@ -559,18 +374,127 @@ export default function Admin() {
 
   const targetSiteLabel = (adminSite || "").trim().toLowerCase() || "—";
 
-  const topStats = [
-    { label: "Site app", value: normalizedSite || "—", tone: "default" },
-    { label: "Rôle", value: memberRole || "—", tone: isAdmin ? "green" : "default" },
-    ...(isGlobalAdmin ? [{ label: "Global", value: "admin", tone: "purple" }] : []),
-  ];
+  // ------------------------
+  // UI styles (dark / simple / readable)
+  const UI = {
+    page: {
+      padding: 16,
+      maxWidth: 960,
+      margin: "0 auto",
+      color: "#e8eefc",
+    },
+    card: {
+      background: "rgba(8,14,28,0.72)",
+      border: "1px solid rgba(255,255,255,0.10)",
+      borderRadius: 14,
+      padding: 14,
+      boxShadow: "0 6px 28px rgba(0,0,0,0.18)",
+    },
+    sectionTitle: {
+      margin: 0,
+      fontSize: 18,
+      fontWeight: 800,
+    },
+    sub: {
+      opacity: 0.75,
+      fontSize: 12,
+      marginTop: 4,
+    },
+    row: {
+      display: "flex",
+      gap: 10,
+      alignItems: "center",
+      flexWrap: "wrap",
+    },
+    btn: {
+      height: 36,
+      padding: "0 12px",
+      borderRadius: 10,
+      border: "1px solid rgba(255,255,255,0.16)",
+      background: "rgba(255,255,255,0.03)",
+      color: "#e8eefc",
+      cursor: "pointer",
+      fontWeight: 600,
+    },
+    btnPrimary: {
+      height: 36,
+      padding: "0 12px",
+      borderRadius: 10,
+      border: "1px solid rgba(77,137,255,0.45)",
+      background: "rgba(77,137,255,0.18)",
+      color: "#e8eefc",
+      cursor: "pointer",
+      fontWeight: 700,
+    },
+    btnDanger: {
+      height: 34,
+      padding: "0 10px",
+      borderRadius: 10,
+      border: "1px solid rgba(255,92,92,0.35)",
+      background: "rgba(255,92,92,0.10)",
+      color: "#ffd0d0",
+      cursor: "pointer",
+      fontWeight: 700,
+    },
+    input: {
+      width: "100%",
+      height: 38,
+      borderRadius: 10,
+      border: "1px solid rgba(255,255,255,0.12)",
+      background: "rgba(255,255,255,0.03)",
+      color: "#e8eefc",
+      padding: "0 12px",
+      outline: "none",
+      boxSizing: "border-box",
+    },
+    select: {
+      width: "100%",
+      height: 38,
+      borderRadius: 10,
+      border: "1px solid rgba(255,255,255,0.12)",
+      background: "#0b1220",
+      color: "#e8eefc",
+      padding: "0 12px",
+      outline: "none",
+      boxSizing: "border-box",
+      appearance: "auto",
+    },
+    label: {
+      display: "grid",
+      gap: 6,
+      fontSize: 12,
+      color: "rgba(232,238,252,0.9)",
+    },
+    badge: {
+      display: "inline-flex",
+      alignItems: "center",
+      height: 24,
+      padding: "0 8px",
+      borderRadius: 999,
+      fontSize: 11,
+      fontWeight: 700,
+      border: "1px solid rgba(255,255,255,0.12)",
+      background: "rgba(255,255,255,0.03)",
+      color: "#dfe7fb",
+    },
+  };
 
   return (
     <div style={UI.page}>
-      <OptionSafeStyle />
+      {/* force lisibilité des menus déroulants sur Chrome/Windows */}
+      <style>{`
+        select, option {
+          background: #0b1220;
+          color: #e8eefc;
+        }
+        select:disabled, button:disabled, input:disabled {
+          opacity: .6;
+          cursor: not-allowed;
+        }
+      `}</style>
 
-      {/* HEADER */}
-      <div style={{ ...UI.card, padding: 16 }}>
+      {/* HEADER SIMPLE */}
+      <div style={{ ...UI.card, marginBottom: 14 }}>
         <div
           style={{
             display: "flex",
@@ -580,28 +504,22 @@ export default function Admin() {
             flexWrap: "wrap",
           }}
         >
-          <div style={{ minWidth: 260 }}>
+          <div>
             <h2 style={{ margin: 0, fontSize: 24, fontWeight: 900 }}>Administration</h2>
-            <div style={UI.sub}>Gestion des membres et des sites (mode sécurisé).</div>
 
-            <div style={{ ...UI.row, marginTop: 10 }}>
-              {topStats.map((x) => {
-                const style =
-                  x.tone === "green"
-                    ? UI.chipGreen
-                    : x.tone === "purple"
-                    ? UI.chipPurple
-                    : UI.chip;
-                return (
-                  <span key={`${x.label}-${x.value}`} style={style}>
-                    {x.label}: {x.value}
-                  </span>
-                );
-              })}
+            <div style={{ ...UI.row, marginTop: 8, gap: 8 }}>
+              <span style={UI.badge}>Site app: {normalizedSite || "—"}</span>
+              <span style={UI.badge}>Rôle: {memberRole || "—"}</span>
+              {isGlobalAdmin ? <span style={UI.badge}>🌍 Global admin</span> : null}
             </div>
+
+            {/* volontairement léger: on masque id / api base */}
+            {sessionInfo.email ? (
+              <div style={{ ...UI.sub, marginTop: 8 }}>Session: {sessionInfo.email}</div>
+            ) : null}
           </div>
 
-          <div style={{ ...UI.row, justifyContent: "flex-end" }}>
+          <div style={{ ...UI.row, gap: 8 }}>
             <button type="button" onClick={goSetup} style={UI.btn}>
               ← Setup
             </button>
@@ -613,146 +531,153 @@ export default function Admin() {
             </button>
           </div>
         </div>
-
-        {/* Infos minimales (email OK, ID masqué) */}
-        <div style={{ ...UI.smallMuted, marginTop: 10 }}>
-          Connecté : <b style={{ opacity: 0.95 }}>{sessionInfo.email || "—"}</b>
-        </div>
       </div>
 
       {/* SITE CIBLE */}
-      <div style={{ ...UI.card, marginTop: 14 }}>
-        <div style={UI.row}>
-          <h3 style={{ ...UI.sectionTitle, fontSize: 17 }}>Site cible (Admin)</h3>
-          <span style={UI.smallMuted}>
-            Gère les membres du site sélectionné sans changer automatiquement le site opérationnel.
-          </span>
+      <div style={{ ...UI.card, marginBottom: 14 }}>
+        <div style={{ ...UI.sectionTitle, fontSize: 17 }}>📁 Site cible (Admin)</div>
+        <div style={UI.sub}>
+          Gère les membres du site sélectionné sans changer automatiquement le site opérationnel.
         </div>
-
-        <div style={UI.divider} />
 
         <div
           style={{
+            marginTop: 12,
             display: "grid",
             gridTemplateColumns: isGlobalAdmin && sites.length > 0 ? "1fr auto auto auto" : "1fr auto",
             gap: 10,
             alignItems: "end",
           }}
         >
-          <label style={UI.label}>
-            <span>Choisir un site</span>
+          {isGlobalAdmin && sites.length > 0 ? (
+            <>
+              <label style={UI.label}>
+                <span>Choisir un site</span>
+                <select
+                  value={targetSiteLabel}
+                  onChange={(e) => setAdminSite(String(e.target.value || "").trim().toLowerCase())}
+                  style={UI.select}
+                >
+                  {sites.map((s) => {
+                    const code = String(s.site_code || s.code || "").trim().toLowerCase();
+                    const name = String(s.name || "").trim();
+                    return (
+                      <option key={code} value={code}>
+                        {code}
+                        {name ? ` — ${name}` : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
 
-            {isGlobalAdmin && sites.length > 0 ? (
-              <select
-                value={targetSiteLabel}
-                onChange={(e) => setAdminSite(String(e.target.value || "").trim().toLowerCase())}
-                style={UI.select}
+              <button type="button" onClick={loadMembers} disabled={membersLoading} style={UI.btn}>
+                {membersLoading ? "..." : "Voir membres"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSiteCode?.(targetSiteLabel)}
+                disabled={!targetSiteLabel}
+                title="Mettre ce site comme site de l’app (Setup/Cockpit)"
+                style={UI.btn}
               >
-                {sites.map((s) => {
-                  const code = String(s.site_code || s.code || "").trim().toLowerCase();
-                  const name = String(s.name || "").trim();
-                  return (
-                    <option key={code} value={code}>
-                      {code}{name ? ` — ${name}` : ""}
-                    </option>
-                  );
-                })}
-              </select>
-            ) : (
-              <input value={targetSiteLabel} readOnly style={UI.input} />
-            )}
-          </label>
+                Utiliser dans l’app
+              </button>
 
-          <button type="button" onClick={loadMembers} disabled={membersLoading} style={UI.btn}>
-            {membersLoading ? "..." : "Voir membres"}
-          </button>
+              <button type="button" onClick={loadSites} disabled={sitesLoading} style={UI.btn}>
+                {sitesLoading ? "..." : "Tester list-sites"}
+              </button>
+            </>
+          ) : (
+            <>
+              <label style={UI.label}>
+                <span>Site ciblé</span>
+                <input value={targetSiteLabel} readOnly style={UI.input} />
+              </label>
 
-          {isGlobalAdmin && (
-            <button
-              type="button"
-              onClick={() => setSiteCode?.(targetSiteLabel)}
-              disabled={!targetSiteLabel}
-              title="Mettre ce site comme site de l’app (Setup/Cockpit)"
-              style={UI.btn}
-            >
-              Utiliser dans l’app
-            </button>
-          )}
-
-          {!isGlobalAdmin && (
-            <button type="button" onClick={loadSites} disabled={sitesLoading} style={UI.btn}>
-              {sitesLoading ? "..." : "Tester multi-site"}
-            </button>
+              <button type="button" onClick={loadSites} disabled={sitesLoading} style={UI.btn}>
+                {sitesLoading ? "..." : "Tester list-sites"}
+              </button>
+            </>
           )}
         </div>
 
-        <div style={{ ...UI.row, marginTop: 10 }}>
-          {canManage ? <span style={UI.chipGreen}>Accès admin OK</span> : <span style={UI.chipRed}>Accès limité</span>}
-          {isGlobalAdmin ? <span style={UI.chipPurple}>Multi-site actif</span> : null}
-        </div>
+        {!isGlobalAdmin ? (
+          <div style={{ ...UI.sub, marginTop: 10 }}>
+            Mode mono-site (list-sites indisponible ou non autorisé).
+          </div>
+        ) : null}
 
         {isGlobalAdmin ? (
-          <>
-            <div style={UI.divider} />
+          <form onSubmit={createSite} style={{ marginTop: 14 }}>
+            <div style={{ ...UI.row, justifyContent: "space-between", marginBottom: 8 }}>
+              <div style={{ fontWeight: 800 }}>➕ Créer un site</div>
+            </div>
 
-            <form onSubmit={createSite} style={{ display: "grid", gap: 10 }}>
-              <h4 style={{ margin: 0, fontSize: 15 }}>Créer un site</h4>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr 150px",
-                  gap: 10,
-                }}
-              >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 140px",
+                gap: 10,
+                alignItems: "end",
+              }}
+            >
+              <label style={UI.label}>
+                <span>Code site</span>
                 <input
                   value={siteForm.code}
                   onChange={(e) => setSiteForm((s) => ({ ...s, code: e.target.value }))}
-                  placeholder="Code (ex: melun)"
+                  placeholder="ex: melun"
                   style={UI.input}
                 />
+              </label>
+
+              <label style={UI.label}>
+                <span>Nom (optionnel)</span>
                 <input
                   value={siteForm.name}
                   onChange={(e) => setSiteForm((s) => ({ ...s, name: e.target.value }))}
-                  placeholder="Nom (optionnel)"
+                  placeholder="ex: Melun"
                   style={UI.input}
                 />
-                <button type="submit" disabled={siteCreating} style={UI.btnPrimary}>
-                  {siteCreating ? "..." : "Créer"}
-                </button>
-              </div>
+              </label>
 
-              <div style={UI.smallMuted}>
-                Si l’endpoint site-create n’existe pas encore, cette action peut ne pas fonctionner.
-              </div>
-            </form>
-          </>
+              <button type="submit" disabled={siteCreating} style={UI.btnPrimary}>
+                {siteCreating ? "..." : "Créer"}
+              </button>
+            </div>
+          </form>
         ) : null}
       </div>
 
-      {/* CREATE/UPDATE MEMBER */}
+      {!canManage && (
+        <div style={{ ...UI.card, marginBottom: 14, borderColor: "rgba(255,170,80,0.35)" }}>
+          <b>Accès limité.</b> Tu dois être <b>admin</b> (ou global admin) pour créer/modifier les
+          membres.
+        </div>
+      )}
+
+      {/* CREATE / UPDATE MEMBER */}
       <form
         onSubmit={onSubmit}
         style={{
           ...UI.card,
-          marginTop: 14,
-          opacity: canManage ? 1 : 0.65,
+          marginBottom: 14,
+          opacity: canManage ? 1 : 0.6,
           pointerEvents: canManage ? "auto" : "none",
         }}
       >
-        <div style={UI.row}>
-          <h3 style={{ ...UI.sectionTitle, fontSize: 17 }}>Créer / mettre à jour un membre</h3>
-          <span style={UI.smallMuted}>Création ou mise à jour via CODE + PIN sur le site cible.</span>
+        <div style={{ ...UI.row, justifyContent: "space-between", marginBottom: 10 }}>
+          <div>
+            <div style={UI.sectionTitle}>👤 Créer / mettre à jour un membre</div>
+            <div style={UI.sub}>Création ou mise à jour via CODE + PIN sur le site cible.</div>
+          </div>
+
+          <span style={UI.badge}>Site cible: {targetSiteLabel}</span>
         </div>
 
-        <div style={UI.divider} />
-
-        <div style={{ ...UI.row, marginBottom: 10 }}>
-          <span style={UI.chip}>Site cible: {targetSiteLabel}</span>
-          <span style={UI.chip}>Rôles: user / manager / admin</span>
-        </div>
-
-        <div style={UI.grid2}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <label style={UI.label}>
             <span>CODE</span>
             <input
@@ -804,33 +729,49 @@ export default function Admin() {
 
       {/* MESSAGE */}
       {msg && (
-        <div style={msg.type === "error" ? UI.msgErr : UI.msgOk}>
+        <div
+          style={{
+            ...UI.card,
+            marginBottom: 14,
+            borderColor:
+              msg.type === "error"
+                ? "rgba(255,92,92,0.30)"
+                : "rgba(76,175,80,0.28)",
+            background:
+              msg.type === "error"
+                ? "rgba(255,92,92,0.06)"
+                : "rgba(76,175,80,0.05)",
+          }}
+        >
           <b>{msg.type === "error" ? "Erreur" : "OK"}</b> — {msg.text}
         </div>
       )}
 
-      {/* MEMBERS */}
-      <div style={{ ...UI.card, marginTop: 14 }}>
+      {/* MEMBERS LIST */}
+      <div style={UI.card}>
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
-            gap: 10,
             alignItems: "center",
+            gap: 10,
             flexWrap: "wrap",
           }}
         >
           <div>
-            <h3 style={{ ...UI.sectionTitle, fontSize: 17 }}>Membres du site</h3>
-            <div style={UI.sub}>Recherche, rôles, reset PIN, suppression.</div>
+            <h3 style={{ margin: 0 }}>👥 Membres du site</h3>
+            <div style={UI.sub}>
+              Site: <b>{targetSiteLabel}</b> · Admins: <b>{adminCount}</b> · Total:{" "}
+              <b>{members?.length || 0}</b>
+            </div>
           </div>
 
-          <div style={{ ...UI.row }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Recherche (code / rôle / nom)…"
-              style={{ ...UI.input, minWidth: 240 }}
+              style={{ ...UI.input, minWidth: 260 }}
             />
             <button type="button" onClick={loadMembers} disabled={membersLoading} style={UI.btn}>
               {membersLoading ? "..." : "Rafraîchir"}
@@ -838,15 +779,7 @@ export default function Admin() {
           </div>
         </div>
 
-        <div style={UI.divider} />
-
-        <div style={{ ...UI.row, marginBottom: 8 }}>
-          <span style={UI.chip}>Site: {targetSiteLabel}</span>
-          <span style={UI.chipRed}>Admins: {adminCount}</span>
-          <span style={UI.chip}>Total: {filtered?.length || 0}</span>
-        </div>
-
-        <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
           {(filtered || []).map((m) => {
             const uid = m.user_id;
             const rowBusy = !!actionLoading[uid];
@@ -857,7 +790,7 @@ export default function Admin() {
               <div
                 key={`${m.site_code}:${uid}`}
                 style={{
-                  border: "1px solid rgba(255,255,255,0.09)",
+                  border: "1px solid rgba(255,255,255,0.10)",
                   borderRadius: 12,
                   padding: 10,
                   background: "rgba(255,255,255,0.02)",
@@ -866,87 +799,75 @@ export default function Admin() {
               >
                 <div
                   style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 10,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 800, fontSize: 14 }}>
-                      {m.member_code || "membre"}
-                      {m.full_name ? (
-                        <span style={{ opacity: 0.8, fontWeight: 500 }}> · {m.full_name}</span>
-                      ) : null}
-                    </div>
-
-                    <div style={{ ...UI.smallMuted, marginTop: 2 }}>
-                      {m.created_at ? new Date(m.created_at).toLocaleString() : "—"}
-                    </div>
-                  </div>
-
-                  <div style={{ ...UI.row }}>
-                    {role === "admin" ? <span style={UI.chipRed}>admin</span> : null}
-                    {isMe ? <span style={UI.chip}>Toi</span> : null}
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    marginTop: 10,
                     display: "grid",
-                    gridTemplateColumns: "1fr auto auto",
-                    gap: 8,
-                    alignItems: "end",
+                    gridTemplateColumns: "1fr 220px auto",
+                    gap: 10,
+                    alignItems: "center",
                   }}
                 >
-                  <label style={UI.label}>
-                    <span>Rôle</span>
-                    <select
-                      value={role}
-                      disabled={!canManage || rowBusy}
-                      onChange={(e) => updateRole(uid, e.target.value)}
-                      title={!canManage ? "Accès admin requis" : ""}
-                      style={UI.select}
-                    >
-                      <option value="user">user</option>
-                      <option value="manager">manager</option>
-                      <option value="admin">admin</option>
-                    </select>
-                  </label>
+                  {/* Infos légères : plus d’ID affiché */}
+                  <div>
+                    <div style={{ fontWeight: 800, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <span>{m.member_code || "membre"}</span>
+                      {m.full_name ? <span style={{ opacity: 0.8 }}>· {m.full_name}</span> : null}
+                      {isMe ? <span style={UI.badge}>Toi</span> : null}
+                      {role === "admin" ? <span style={UI.badge}>admin</span> : null}
+                    </div>
 
-                  <button
-                    type="button"
-                    disabled={!canManage || rowBusy}
-                    onClick={() => resetPin(uid, m.member_code)}
-                    style={UI.btn}
-                  >
-                    {actionLoading[uid] === "pin" ? "..." : "Reset PIN"}
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={!canManage || rowBusy || isMe || isLastAdmin(uid)}
-                    onClick={() => removeMember(uid, m.member_code)}
-                    title={isMe ? "Impossible de te supprimer toi-même" : ""}
-                    style={UI.btnDanger}
-                  >
-                    {actionLoading[uid] === "delete" ? "..." : "Supprimer"}
-                  </button>
-                </div>
-
-                {isLastAdmin(uid) && (
-                  <div style={{ ...UI.smallMuted, marginTop: 8 }}>
-                    ⚠️ Dernier admin du site (suppression / rétrogradation bloquées)
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                      {m.created_at ? new Date(m.created_at).toLocaleDateString() : "—"}
+                    </div>
                   </div>
-                )}
+
+                  <div>
+                    <label style={UI.label}>
+                      <span>Rôle</span>
+                      <select
+                        value={role}
+                        disabled={!canManage || rowBusy}
+                        onChange={(e) => updateRole(uid, e.target.value)}
+                        title={!canManage ? "Accès admin requis" : ""}
+                        style={UI.select}
+                      >
+                        <option value="user">user</option>
+                        <option value="manager">manager</option>
+                        <option value="admin">admin</option>
+                      </select>
+                    </label>
+                    {isLastAdmin(uid) && (
+                      <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>
+                        ⚠️ Dernier admin
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      disabled={!canManage || rowBusy}
+                      onClick={() => resetPin(uid, m.member_code)}
+                      style={UI.btn}
+                    >
+                      {actionLoading[uid] === "pin" ? "..." : "Reset PIN"}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!canManage || rowBusy || isMe || isLastAdmin(uid)}
+                      onClick={() => removeMember(uid, m.member_code)}
+                      style={UI.btnDanger}
+                      title={isMe ? "Impossible de te supprimer toi-même" : ""}
+                    >
+                      {actionLoading[uid] === "delete" ? "..." : "Supprimer"}
+                    </button>
+                  </div>
+                </div>
               </div>
             );
           })}
 
           {!membersLoading && (!filtered || filtered.length === 0) && (
-            <div style={{ opacity: 0.8 }}>Aucun membre trouvé.</div>
+            <div style={{ opacity: 0.8, padding: 8 }}>Aucun membre trouvé.</div>
           )}
         </div>
       </div>
