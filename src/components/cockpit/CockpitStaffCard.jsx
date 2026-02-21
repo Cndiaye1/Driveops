@@ -1,26 +1,38 @@
+// src/components/cockpit/CockpitStaffCard.jsx
 import React from "react";
+import { normalizePoste, posteMeta } from "./cockpitUi";
 
 export default function CockpitStaffCard({
-  ui,
   nom,
-  blockAssignments,
-  currentBlockId,
-  postes = [],
-  setAssignment,
+  ui,
   canEdit,
-  canReturn,
+  postes,
+  currentBlockId,
+  blockAssignments,
+  setAssignment,
+  pauseTakenAt,
+  pauseDurationMinutes,
+  returnAlertUntil,
+  canReturnFromPause,
   returnFromPause,
   showSkipUI,
-  isSkipped,
+  currentSkipMap,
   toggleSkipRotation,
-  poste,
-  meta,
-  pauseDue,
-  pauseEnded,
-  justReturned,
-  rotationLocked,
+  isPauseDue,
   rotationImminent,
+  rotationLocked,
 }) {
+  const poste = normalizePoste(blockAssignments[nom]);
+  const meta = posteMeta(poste);
+  const pauseDue = isPauseDue(nom);
+
+  const started = pauseTakenAt?.[nom];
+  const durMs = (Number(pauseDurationMinutes) || 30) * 60000;
+  const pauseEnded = poste === "PAUSE" && started && Date.now() - started >= durMs;
+
+  const justReturned = (returnAlertUntil?.[nom] || 0) > Date.now();
+  const isSkipped = !!currentSkipMap?.[nom];
+
   const cardState = rotationLocked
     ? "danger"
     : pauseDue || rotationImminent
@@ -107,14 +119,14 @@ export default function CockpitStaffCard({
               <option value="" style={ui.option}>
                 --
               </option>
-              {postes.map((p) => (
+              {(postes || []).map((p) => (
                 <option key={p} value={p} style={ui.option}>
                   {p}
                 </option>
               ))}
             </select>
 
-            {canReturn ? (
+            {canReturnFromPause(nom) ? (
               <button
                 className="btn mini"
                 onClick={() => returnFromPause(String(currentBlockId), nom)}

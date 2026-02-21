@@ -1,13 +1,14 @@
+// src/components/Cockpit.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { formatClock, minLeft, minutesSince } from "../utils/time";
 import { buildBlocks, formatBlockLabel } from "../utils/blocks";
 
-import CockpitBlockModal from "./cockpit/CockpitBlockModal";
 import CockpitTopbar from "./cockpit/CockpitTopbar";
-import CockpitAlertBanners from "./cockpit/CockpitAlertBanners";
+import CockpitBlockModal from "./cockpit/CockpitBlockModal";
+import CockpitCallouts from "./cockpit/CockpitCallouts";
 import CockpitStaffGrid from "./cockpit/CockpitStaffGrid";
-import { cockpitUi, normalizePoste, posteMeta } from "./cockpit/cockpitTheme";
+import { getCockpitUi, normalizePoste } from "./cockpit/cockpitUi";
 
 export default function Cockpit() {
   const {
@@ -72,9 +73,7 @@ export default function Cockpit() {
   const [blockModalOpen, setBlockModalOpen] = useState(false);
   const [blockDraft, setBlockDraft] = useState(String(currentBlockId ?? ""));
 
-  // -------------------------------------------------
-  // UI styles (safe inline : corrige lisibilité selects/options)
-  const ui = cockpitUi;
+  const ui = useMemo(() => getCockpitUi(), []);
 
   const togglePausePick = useCallback((nom) => {
     setPauseSelection((s) => ({ ...s, [nom]: !s[nom] }));
@@ -262,6 +261,8 @@ export default function Cockpit() {
     setBlockModalOpen(false);
   }, [blockDraft, setCurrentBlockManual]);
 
+  const canReturnFromPause = (nom) => normalizePoste(blockAssignments[nom]) === "PAUSE";
+
   const visibleStaff = useMemo(() => {
     if (!onlyPaused) return dayStaff || [];
     return (dayStaff || []).filter((n) => normalizePoste(blockAssignments[n]) === "PAUSE");
@@ -272,16 +273,60 @@ export default function Cockpit() {
 
   const phaseTone = rotationLocked ? "#fca5a5" : rotationImminent ? "#fcd34d" : "#86efac";
 
+  const handleReturnAllEndedPauses = useCallback(() => {
+    const ok = window.confirm("Retourner au poste précédent tous ceux dont la pause est terminée ?");
+    if (!ok) return;
+    returnAllEndedPausesCurrentBlock();
+  }, [returnAllEndedPausesCurrentBlock]);
+
+  const cardProps = useMemo(
+    () => ({
+      canEdit,
+      postes,
+      currentBlockId,
+      blockAssignments,
+      setAssignment,
+      pauseTakenAt,
+      pauseDurationMinutes,
+      returnAlertUntil,
+      canReturnFromPause,
+      returnFromPause,
+      showSkipUI,
+      currentSkipMap,
+      toggleSkipRotation,
+      isPauseDue,
+      rotationImminent,
+      rotationLocked,
+    }),
+    [
+      canEdit,
+      postes,
+      currentBlockId,
+      blockAssignments,
+      setAssignment,
+      pauseTakenAt,
+      pauseDurationMinutes,
+      returnAlertUntil,
+      returnFromPause,
+      showSkipUI,
+      currentSkipMap,
+      toggleSkipRotation,
+      rotationImminent,
+      rotationLocked,
+      // canReturnFromPause + isPauseDue are stable enough as inline closures in component lifecycle
+    ]
+  );
+
   return (
     <div className="page" onClick={() => menuOpen && setMenuOpen(false)}>
       <CockpitBlockModal
         open={blockModalOpen}
-        ui={ui}
         blocks={blocks}
         blockDraft={blockDraft}
         setBlockDraft={setBlockDraft}
         onClose={() => setBlockModalOpen(false)}
         onApply={applyBlockModal}
+        ui={ui}
       />
 
       <CockpitTopbar
@@ -289,8 +334,8 @@ export default function Cockpit() {
         coordinator={coordinator}
         clock={clock}
         blockLabel={blockLabel}
-        phaseTone={phaseTone}
         phaseLabel={phaseLabel}
+        phaseTone={phaseTone}
         rotationLocked={rotationLocked}
         remaining={remaining}
         pauseAfterMinutes={pauseAfterMinutes}
@@ -303,7 +348,7 @@ export default function Cockpit() {
         exportWall={exportWall}
         validateRotation={validateRotation}
         canValidateRotation={canValidateRotation}
-        missingAssignmentsCount={missingAssignments.length}
+        missingAssignments={missingAssignments}
         menuOpen={menuOpen}
         setMenuOpen={setMenuOpen}
         goSetup={goSetup}
@@ -313,27 +358,28 @@ export default function Cockpit() {
         openBlockModal={openBlockModal}
       />
 
-      <CockpitAlertBanners
+      <CockpitCallouts
         ui={ui}
         canUseTopActions={canUseTopActions}
         missingAssignments={missingAssignments}
-        fillMissingAssignmentsFromPrevBlock={fillMissingAssignmentsFromPrevBlock}
+        onAutoFillMissing={() => fillMissingAssignmentsFromPrevBlock()}
         pausesEndedList={pausesEndedList}
         pauseDurationMinutes={pauseDurationMinutes}
-        returnAllEndedPausesCurrentBlock={returnAllEndedPausesCurrentBlock}
+        onReturnAllEndedPauses={handleReturnAllEndedPauses}
         pausesOngoing={pausesOngoing}
         currentBlockId={currentBlockId}
-        returnFromPause={returnFromPause}
+        onReturnFromPause={returnFromPause}
         pausesDueList={pausesDueList}
         pauseAfterMinutes={pauseAfterMinutes}
         pauseWaveSize={pauseWaveSize}
         setPauseWaveSize={setPauseWaveSize}
-        dayStaff={dayStaff || []}
+        dayStaffLength={(dayStaff || []).length}
         autoPickPauseWave={autoPickPauseWave}
         sendPauseWave={sendPauseWave}
         selectedPauseList={selectedPauseList}
         pauseSelection={pauseSelection}
         togglePausePick={togglePausePick}
+        blockAssignments={blockAssignments}
         rotationImminent={rotationImminent}
         rotationLocked={rotationLocked}
         rotationWarnMinutes={rotationWarnMinutes}
@@ -347,24 +393,9 @@ export default function Cockpit() {
         onlyPaused={onlyPaused}
         setOnlyPaused={setOnlyPaused}
         showSkipUI={showSkipUI}
-        visibleStaff={visibleStaff}
-        blockAssignments={blockAssignments}
-        pauseTakenAt={pauseTakenAt}
-        pauseDurationMinutes={pauseDurationMinutes}
-        returnAlertUntil={returnAlertUntil}
-        currentSkipMap={currentSkipMap}
-        rotationLocked={rotationLocked}
-        rotationImminent={rotationImminent}
-        isPauseDue={isPauseDue}
-        normalizePoste={normalizePoste}
-        posteMeta={posteMeta}
-        canEdit={canEdit}
-        setAssignment={setAssignment}
-        currentBlockId={currentBlockId}
-        postes={postes || []}
-        toggleSkipRotation={toggleSkipRotation}
-        returnFromPause={returnFromPause}
         wallMode={wallMode}
+        visibleStaff={visibleStaff}
+        cardProps={cardProps}
       />
     </div>
   );

@@ -1,14 +1,15 @@
+// src/components/cockpit/CockpitBlockModal.jsx
 import React from "react";
 import { toH } from "../../utils/blocks";
 
 export default function CockpitBlockModal({
   open,
-  ui,
-  blocks = [],
+  blocks,
   blockDraft,
   setBlockDraft,
   onClose,
   onApply,
+  ui,
 }) {
   if (!open) return null;
 
@@ -40,11 +41,7 @@ export default function CockpitBlockModal({
         </p>
 
         <div className="row" style={{ marginTop: 10 }}>
-          <select
-            value={blockDraft}
-            onChange={(e) => setBlockDraft(e.target.value)}
-            style={ui.select}
-          >
+          <select value={blockDraft} onChange={(e) => setBlockDraft(e.target.value)} style={ui.select}>
             {blocks.map((b) => (
               <option key={b.id} value={b.id} style={ui.option}>
                 {toH(b.start)}–{toH(b.end)}
@@ -54,21 +51,11 @@ export default function CockpitBlockModal({
         </div>
 
         <div className="row" style={{ marginTop: 12 }}>
-          <button
-            className="btn ghost"
-            onClick={onClose}
-            style={ui.btnGhost}
-            type="button"
-          >
+          <button className="btn ghost" onClick={onClose} style={ui.btnGhost} type="button">
             Annuler
           </button>
           <div style={{ flex: 1 }} />
-          <button
-            className="btn primary"
-            onClick={onApply}
-            style={ui.btnPrimary}
-            type="button"
-          >
+          <button className="btn primary" onClick={onApply} style={ui.btnPrimary} type="button">
             ✅ Valider
           </button>
         </div>

@@ -1,3 +1,4 @@
+// src/components/cockpit/CockpitStaffGrid.jsx
 import React from "react";
 import CockpitStaffCard from "./CockpitStaffCard";
 
@@ -6,36 +7,13 @@ export default function CockpitStaffGrid({
   blockLabel,
   rotationMinutes,
   rotationWarnMinutes,
-
   onlyPaused,
   setOnlyPaused,
   showSkipUI,
-
-  visibleStaff = [],
-  blockAssignments = {},
-  pauseTakenAt = {},
-  pauseDurationMinutes,
-  returnAlertUntil = {},
-  currentSkipMap = {},
-
-  rotationLocked,
-  rotationImminent,
-  isPauseDue,
-  normalizePoste,
-  posteMeta,
-
-  canEdit,
-  setAssignment,
-  currentBlockId,
-  postes = [],
-  toggleSkipRotation,
-  returnFromPause,
-
   wallMode,
+  visibleStaff,
+  cardProps,
 }) {
-  const now = Date.now();
-  const durMs = (Number(pauseDurationMinutes) || 30) * 60000;
-
   return (
     <div className="card" style={ui.panel}>
       <div className="sectionHeader">
@@ -73,44 +51,9 @@ export default function CockpitStaffGrid({
       </div>
 
       <div className="cardsGrid">
-        {visibleStaff.map((nom) => {
-          const poste = normalizePoste(blockAssignments[nom]);
-          const meta = posteMeta(poste);
-          const pauseDue = isPauseDue(nom);
-
-          const started = pauseTakenAt?.[nom];
-          const pauseEnded = poste === "PAUSE" && started && now - started >= durMs;
-
-          const justReturned = (returnAlertUntil?.[nom] || 0) > now;
-          const isSkipped = !!currentSkipMap?.[nom];
-
-          const canReturn = normalizePoste(blockAssignments[nom]) === "PAUSE";
-
-          return (
-            <CockpitStaffCard
-              key={nom}
-              ui={ui}
-              nom={nom}
-              blockAssignments={blockAssignments}
-              currentBlockId={currentBlockId}
-              postes={postes}
-              setAssignment={setAssignment}
-              canEdit={canEdit}
-              canReturn={canReturn}
-              returnFromPause={returnFromPause}
-              showSkipUI={showSkipUI}
-              isSkipped={isSkipped}
-              toggleSkipRotation={toggleSkipRotation}
-              poste={poste}
-              meta={meta}
-              pauseDue={pauseDue}
-              pauseEnded={pauseEnded}
-              justReturned={justReturned}
-              rotationLocked={rotationLocked}
-              rotationImminent={rotationImminent}
-            />
-          );
-        })}
+        {visibleStaff.map((nom) => (
+          <CockpitStaffCard key={nom} nom={nom} ui={ui} {...cardProps} />
+        ))}
       </div>
 
       {!wallMode && (
