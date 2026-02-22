@@ -336,7 +336,7 @@ const defaultState = {
   siteCode: DEFAULT_SITE_CODE,
 
   // UI only (local)
-  screen: "setup", // setup | cockpit | admin
+  screen: "setup", // setup | cockpit | admin | planning
   setupStep: 1,
   wallMode: false,
   printMode: false,
@@ -344,10 +344,10 @@ const defaultState = {
   // ✅ référentiels + règles (par site) — seront remplacés par drive_site_config dès que chargé
   preparateursList: ["STEVE", "THÉRY", "JOHN", "MIKE", "TOM"],
   coordosList: ["STEVE", "THÉRY", "JOHN"],
-  postes: ["ACCUEIL","PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
+  postes: ["ACCUEIL", "PGC", "FS", "LIV", "MES", "LAD", "FLEG/SURG", "RE", "NET", "PAUSE"],
   horaires: [
-    "06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00",
-    "16:00","17:00","18:00","19:00","20:00","21:00",
+    "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00",
+    "16:00", "17:00", "18:00", "19:00", "20:00", "21:00",
   ],
 
   rotationMinutes: 120,
@@ -856,6 +856,7 @@ export const useDriveStore = create(
         goSetup: () => set((s) => ({ ...s, screen: "setup" })),
         goCockpit: () => set((s) => ({ ...s, screen: "cockpit" })),
         goAdmin: () => set((s) => ({ ...s, screen: "admin" })),
+        goPlanning: () => set((s) => ({ ...s, screen: "planning" })), // ✅ NEW
 
         setSetupStep: (setupStep) => set((s) => ({ ...s, setupStep })),
 
@@ -919,6 +920,7 @@ export const useDriveStore = create(
           });
           scheduleCfgSave();
         },
+
         removePreparateurFromList: (name) => {
           const upper = normalizeName(name);
           set((s) => {
