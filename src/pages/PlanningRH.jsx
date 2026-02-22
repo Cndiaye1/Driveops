@@ -15,9 +15,8 @@ import * as PlanningAutoBalance from "../utils/planningAutoBalance";
    - Supabase-ready + fallback localStorage
    - Analyse RH (règles / écarts / besoins / couverture / coût)
    - Auto-balance (contrat + contraintes + couverture)
+   - Éditeur JSON intégré pour doc.config
    - Print A4 paysage v2+ (créneau + badge code séparés)
-   - ✅ Éditeur JSON intégré pour doc.config
-   - ✅ Adapters compat anciens/nouveaux planningAnalyzer
    ========================================================= */
 
 const ABSENCE_CODES = ["RH", "CP", "OFF", "AT", "MAL", "ABS"];
@@ -336,8 +335,8 @@ function makeRow(name, contractHours = 35) {
     role: "prep", // prep | coordo | autre
     cells: makeEmptyCells(),
     notes: "",
-    skills: [], // Sprint 3 PRO: ex ["drive","frais","caisse"]
-    availability: {}, // Sprint 3 PRO: ex { mon: false, tue: ["06:00-14:00"] }
+    skills: [], // ex ["drive","frais","caisse"]
+    availability: {}, // ex { mon: false, tue: ["06:00-14:00"] }
     hourlyRate: undefined, // optionnel (sinon analyzer fallback rôle/default)
   };
 }
@@ -349,7 +348,7 @@ function makePlanningDoc({ siteCode, weekStartMonday, rows = [] }) {
     rows,
     updatedAt: new Date().toISOString(),
     version: 2,
-    config: {}, // ✅ doc.config intégré dans le document de planning
+    config: {}, // ✅ doc.config intégré
   };
 }
 
@@ -360,7 +359,6 @@ function localKey(siteCode, weekStartMonday) {
 
 // ---------- Supabase (fallback local si table absente)
 async function loadPlanningRemote(siteCode, weekStartMonday) {
-  // Table recommandée: drive_rh_plannings(site_code text, week_start date, data_json jsonb, updated_at timestamptz)
   const { data, error } = await supabase
     .from("drive_rh_plannings")
     .select("site_code, week_start, data_json, updated_at")
@@ -397,197 +395,28 @@ function safeCall(fn, ...args) {
   return null;
 }
 
-function normalizeDocConfig(raw) {
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-}
-
-function parseJSONSafe(text, fallback = null) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-}
-
-// Merge doc.config.needsBySlot + doc.config.skillCoverageBySlot -> requirementsByDaySlot (compat analyzer)
-function buildRequirementsByDaySlotFromDocConfig(docConfig = {}) {
-  const needs = docConfig?.needsBySlot && typeof docConfig.needsBySlot === "object" ? docConfig.needsBySlot : {};
-  const skillNeeds =
-    docConfig?.skillCoverageBySlot && typeof docConfig.skillCoverageBySlot === "object"
-      ? docConfig.skillCoverageBySlot
-      : {};
-
-  const out = {};
-
-  for (const dayKey of DAY_KEYS_MON_START) {
-    const dayNeeds = needs?.[dayKey];
-    const daySkills = skillNeeds?.[dayKey];
-
-    const dayOut = {};
-    const slotKeys = new Set([
-      ...Object.keys(dayNeeds && typeof dayNeeds === "object" ? dayNeeds : {}),
-      ...Object.keys(daySkills && typeof daySkills === "object" ? daySkills : {}),
-    ]);
-
-    for (const slotKey of slotKeys) {
-      const rawNeed = dayNeeds?.[slotKey];
-      const rawSkills = daySkills?.[slotKey];
-
-      let base = {};
-      if (typeof rawNeed === "number") {
-        base = { total: Math.max(0, Number(rawNeed) || 0) };
-      } else if (rawNeed && typeof rawNeed === "object") {
-        base = { ...rawNeed };
-      }
-
-      if (rawSkills && typeof rawSkills === "object") {
-        base.skills = {
-          ...(base.skills && typeof base.skills === "object" ? base.skills : {}),
-          ...rawSkills,
-        };
-      }
-
-      if (Object.keys(base).length) dayOut[slotKey] = base;
-    }
-
-    if (Object.keys(dayOut).length) out[dayKey] = dayOut;
-  }
-
-  return out;
-}
-
-function buildCoverageConfigFromDocConfig(docConfig = {}) {
-  const coverage = docConfig?.coverage && typeof docConfig.coverage === "object" ? docConfig.coverage : {};
-  const coverageWindow =
-    docConfig?.coverageWindow && typeof docConfig.coverageWindow === "object" ? docConfig.coverageWindow : {};
-
-  const from = coverage.from || coverageWindow.from || "06:00";
-  const to = coverage.to || coverageWindow.to || "22:00";
-  const slotMinutes = Number(coverage.slotMinutes || coverageWindow.slotMinutes || 30) || 30;
-
-  return { from, to, slotMinutes };
-}
-
-function buildDefaultsFromDocConfig(docConfig = {}) {
-  const costing = docConfig?.costing && typeof docConfig.costing === "object" ? docConfig.costing : {};
-  const coverage = buildCoverageConfigFromDocConfig(docConfig);
-
-  return {
-    coverage,
-    hourlyRate: Number(costing.defaultHourlyRate) || 0,
-    hourlyRateByRole:
-      costing.hourlyRatesByRole && typeof costing.hourlyRatesByRole === "object"
-        ? costing.hourlyRatesByRole
-        : {},
-  };
-}
-
-function normalizePlanningAnalysisOutput(raw) {
-  const analysis = raw && typeof raw === "object" ? { ...raw } : {};
-
-  analysis.summary = analysis.summary && typeof analysis.summary === "object" ? { ...analysis.summary } : {};
-  analysis.warnings = Array.isArray(analysis.warnings) ? analysis.warnings : [];
-  analysis.needsBySlot = Array.isArray(analysis.needsBySlot) ? analysis.needsBySlot : [];
-  analysis.coverageGaps = Array.isArray(analysis.coverageGaps) ? analysis.coverageGaps : [];
-
-  // costs aliases
-  const totalEstimated =
-    Number(analysis?.costs?.totalEstimated) ||
-    Number(analysis?.summary?.estimatedPayrollCost) ||
-    Number(analysis?.summary?.estimatedCost) ||
-    Number(analysis?.summary?.estimatedPayroll) ||
-    Number(analysis?.summary?.estimatedCostTotal) ||
-    Number(analysis?.summary?.estimatedPayrollCost) ||
-    Number(analysis?.summary?.estimatedCost) ||
-    Number(analysis?.summary?.estimatedPayroll) ||
-    Number(analysis?.summary?.estimatedCostTotal) ||
-    Number(analysis?.summary?.estimatedCostGlobal) ||
-    Number(analysis?.summary?.estimatedCostEur) ||
-    Number(analysis?.summary?.estimatedCostEUR) ||
-    0;
-
-  const byRole =
-    (analysis?.costs?.byRole && typeof analysis.costs.byRole === "object" && analysis.costs.byRole) ||
-    (analysis?.summary?.estimatedCostByRole && typeof analysis.summary.estimatedCostByRole === "object"
-      ? analysis.summary.estimatedCostByRole
-      : analysis?.summary?.estimatedPayrollCostByRole && typeof analysis.summary.estimatedPayrollCostByRole === "object"
-      ? analysis.summary.estimatedPayrollCostByRole
-      : {});
-
-  analysis.costs = {
-    totalEstimated,
-    byRole,
-    currency: analysis?.costs?.currency || "EUR",
-  };
-
-  // coverageSummary fallback
-  if (!analysis.coverageSummary || typeof analysis.coverageSummary !== "object") {
-    const byDay = {};
-    for (const dayKey of DAY_KEYS_MON_START) {
-      byDay[dayKey] = {
-        totalNeed: 0,
-        totalPlanned: 0,
-        totalGap: 0,
-        skillGapsCount: 0,
-        slotCount: 0,
-      };
-    }
-
-    for (const slot of analysis.needsBySlot) {
-      const dk = slot?.dayKey;
-      if (!byDay[dk]) continue;
-      byDay[dk].totalNeed += Number(slot.requiredTotal ?? slot.totalNeed ?? 0) || 0;
-      byDay[dk].totalPlanned += Number(slot.plannedTotal ?? 0) || 0;
-      byDay[dk].totalGap += Number(slot.totalGap ?? slot.gap ?? 0) || 0;
-      byDay[dk].skillGapsCount += Array.isArray(slot.skillGaps)
-        ? slot.skillGaps.filter((g) => Number(g?.gap || 0) > 0).length
-        : 0;
-      byDay[dk].slotCount += 1;
-    }
-
-    analysis.coverageSummary = { byDay };
-  }
-
-  // summary aliases required by PlanningRH + AutoBalance
-  const coverageGapsCount =
-    Number(analysis.summary.coverageGapsCount) ||
-    Number(analysis.summary.coverageGapCount) ||
-    analysis.coverageGaps.length ||
-    0;
-
-  const skillCoverageGapsCount =
-    Number(analysis.summary.skillCoverageGapsCount) ||
-    analysis.coverageGaps.filter((g) => g?.type === "coverage_skill_gap").length ||
-    0;
-
-  const estimatedPayrollCost =
-    Number(analysis.summary.estimatedPayrollCost) || Number(analysis.costs.totalEstimated) || 0;
-
-  analysis.summary.coverageGapsCount = coverageGapsCount;
-  analysis.summary.coverageGapCount = coverageGapsCount;
-  analysis.summary.skillCoverageGapsCount = skillCoverageGapsCount;
-  analysis.summary.estimatedPayrollCost = estimatedPayrollCost;
-
-  // needsBySlot aliases for autoBalance
-  analysis.needsBySlot = analysis.needsBySlot.map((slot) => ({
-    ...slot,
-    slotStart: slot?.slotStart || slot?.start || slot?.slotKey || "",
-    slotEnd: slot?.slotEnd || slot?.end || "",
-    totalGap: Number(slot?.totalGap ?? slot?.gap ?? 0) || 0,
-    skillGaps: Array.isArray(slot?.skillGaps) ? slot.skillGaps : [],
-  }));
-
-  // rulesResults alias (some UIs expect it)
-  if (!Array.isArray(analysis.rulesResults)) analysis.rulesResults = [];
-
-  return analysis;
-}
-
 function buildAnalyzerInput({ doc, rowsWithStats, normalizedSite, weekStartMonday }) {
-  const normalizedDocConfig = normalizeDocConfig(doc?.config || {});
-  const compatRequirements = buildRequirementsByDaySlotFromDocConfig(normalizedDocConfig);
-  const compatCoverage = buildCoverageConfigFromDocConfig(normalizedDocConfig);
-  const compatDefaults = buildDefaultsFromDocConfig(normalizedDocConfig);
+  const cfg = doc?.config || {};
+  const costing = cfg?.costing || {};
+  const defaults = cfg?.defaults || {};
+
+  // ✅ on "flatten" doc.config vers les clés que l'analyzer sait aussi lire
+  const mergedDefaults = {
+    ...defaults,
+    hourlyRate:
+      Number(costing?.defaultHourlyRate) > 0
+        ? Number(costing.defaultHourlyRate)
+        : defaults?.hourlyRate,
+    hourlyRateByRole: {
+      ...(defaults?.hourlyRateByRole || {}),
+      ...(costing?.hourlyRatesByRole || {}),
+    },
+    coverage: {
+      ...(defaults?.coverage || {}),
+      ...(cfg?.coverage || {}),
+      ...(cfg?.coverageConfig || {}),
+    },
+  };
 
   return {
     siteCode: normalizedSite,
@@ -595,15 +424,18 @@ function buildAnalyzerInput({ doc, rowsWithStats, normalizedSite, weekStartMonda
     dayKeysMonStart: DAY_KEYS_MON_START,
     dayKeysUiOrder: DAY_KEYS_UI_ORDER,
 
-    // ✅ fournir plusieurs alias pour compat inter-versions analyzer
+    // sources brutes
     planningDoc: doc,
-    doc, // alias
-    docConfig: normalizedDocConfig,
+    docConfig: cfg,
 
-    // Compat analyzer (ancien format)
-    coverageConfig: compatCoverage,
-    requirementsByDaySlot: compatRequirements,
-    defaults: compatDefaults,
+    // ✅ flattened compat analyzer
+    defaults: mergedDefaults,
+    coverageConfig: {
+      ...(cfg?.coverage || {}),
+      ...(cfg?.coverageConfig || {}),
+    },
+    requirementsByDaySlot: cfg?.requirementsByDaySlot || {},
+    coverageRequirements: cfg?.requirementsByDaySlot || {},
 
     rows: (doc?.rows || []).map((r) => ({
       ...r,
@@ -611,12 +443,12 @@ function buildAnalyzerInput({ doc, rowsWithStats, normalizedSite, weekStartMonda
       weeklyMinutes: computeRowWeeklyMinutes(r.cells || {}),
       weeklyHours: Math.round((computeRowWeeklyMinutes(r.cells || {}) / 60) * 100) / 100,
     })),
-    rowsWithStats, // version enrichie (all rows)
+
+    rowsWithStats,
   };
 }
 
 function runPlanningAnalysis(input) {
-  // signatures fixes + alias rétrocompatibles
   const candidates = [
     PlanningAnalyzer.analyzePlanning,
     PlanningAnalyzer.analyzeWeekPlanning,
@@ -626,15 +458,15 @@ function runPlanningAnalysis(input) {
   ];
 
   for (const c of candidates) {
-    // ✅ passe aussi input.options si la signature le supporte
-    const res = safeCall(c, input, input?.analysisOptions || {});
-    if (res) return normalizePlanningAnalysisOutput(res);
+    const res = safeCall(c, input);
+    if (res) return res;
   }
 
   // fallback local minimal
   const rows = input?.rows || [];
   const warnings = [];
   const byDay = {};
+  const coverageSummary = { byDay: {} };
 
   for (const d of DAY_KEYS_MON_START) {
     let plannedCount = 0;
@@ -643,6 +475,12 @@ function runPlanningAnalysis(input) {
       if (parseShiftToMinutes(v) > 0) plannedCount += 1;
     }
     byDay[d] = { plannedCount };
+    coverageSummary.byDay[d] = {
+      totalGap: 0,
+      totalNeed: 0,
+      totalPlanned: plannedCount,
+      skillGapsCount: 0,
+    };
   }
 
   rows.forEach((r) => {
@@ -660,28 +498,29 @@ function runPlanningAnalysis(input) {
     }
   });
 
-  return normalizePlanningAnalysisOutput({
+  return {
     summary: {
       staffCount: rows.length,
       warningsCount: warnings.length,
-      coverageGapsCount: 0,
       coverageGapCount: 0,
+      coverageGapsCount: 0,
+      skillCoverageGapsCount: 0,
+      estimatedCost: 0,
       estimatedPayrollCost: 0,
       totalPlannedMinutes: rows.reduce((s, r) => s + computeRowWeeklyMinutes(r.cells || {}), 0),
-      totalTargetMinutes: rows.reduce((s, r) => s + (Number(r.contractHours) || 0) * 60, 0),
+      totalTargetMinutes: rows.reduce((s, r) => s + ((Number(r.contractHours) || 0) * 60), 0),
       totalDeltaMinutes:
         rows.reduce((s, r) => s + computeRowWeeklyMinutes(r.cells || {}), 0) -
-        rows.reduce((s, r) => s + (Number(r.contractHours) || 0) * 60, 0),
-      skillCoverageGapsCount: 0,
+        rows.reduce((s, r) => s + ((Number(r.contractHours) || 0) * 60), 0),
     },
     byDay,
     warnings,
     rulesResults: [],
     needsBySlot: [],
     coverageGaps: [],
+    coverageSummary,
     costs: { totalEstimated: 0, currency: "EUR" },
-    coverageSummary: { byDay: {} },
-  });
+  };
 }
 
 function runPlanningRules(input) {
@@ -694,14 +533,15 @@ function runPlanningRules(input) {
   ];
 
   for (const c of candidates) {
-    const res = safeCall(c, input, input?.rulesOptions || {});
+    const res = safeCall(c, input);
     if (res) return res;
   }
 
   return { violations: [], warnings: [] };
 }
 
-function runAutoBalance(input) {
+// ✅ runAutoBalance accepte maintenant input + options (important)
+function runAutoBalance(input, options) {
   const candidates = [
     PlanningAutoBalance.autoBalancePlanning,
     PlanningAutoBalance.runAutoBalance,
@@ -711,8 +551,7 @@ function runAutoBalance(input) {
   ];
 
   for (const c of candidates) {
-    // ✅ important: planningAutoBalance(input, options)
-    const res = safeCall(c, input, input?.options || {});
+    const res = safeCall(c, input, options);
     if (res) return res;
   }
 
@@ -722,14 +561,9 @@ function runAutoBalance(input) {
 function applyAutoBalanceResultToRows(currentRows, result) {
   if (!result) return null;
 
-  // Formats supportés :
-  // 1) { rows: [...] }
   if (Array.isArray(result.rows)) return result.rows;
-
-  // 2) { updatedRows: [...] }
   if (Array.isArray(result.updatedRows)) return result.updatedRows;
 
-  // 3) { patches: [{rowId, dayKey, value}, ...] }
   if (Array.isArray(result.patches)) {
     const rows = (currentRows || []).map((r) => ({ ...r, cells: { ...(r.cells || {}) } }));
     const byId = new Map(rows.map((r) => [r.id, r]));
@@ -744,6 +578,35 @@ function applyAutoBalanceResultToRows(currentRows, result) {
   }
 
   return null;
+}
+
+function deriveCoverageByDayMini(analysis) {
+  const direct = analysis?.coverageSummary?.byDay;
+  if (direct && typeof direct === "object") {
+    return DAY_KEYS_MON_START.map((k) => ({
+      dayKey: k,
+      totalGap: Number(direct?.[k]?.totalGap || 0),
+      totalNeed: Number(direct?.[k]?.totalNeed || 0),
+      totalPlanned: Number(direct?.[k]?.totalPlanned || 0),
+      skillGapsCount: Number(direct?.[k]?.skillGapsCount || 0),
+    }));
+  }
+
+  // fallback depuis needsBySlot
+  const needs = Array.isArray(analysis?.needsBySlot) ? analysis.needsBySlot : [];
+  return DAY_KEYS_MON_START.map((k) => {
+    const slots = needs.filter((s) => s.dayKey === k);
+    return {
+      dayKey: k,
+      totalGap: slots.reduce((sum, s) => sum + (Number(s.totalGap) || 0), 0),
+      totalNeed: slots.reduce((sum, s) => sum + (Number(s.requiredTotal) || 0), 0),
+      totalPlanned: slots.reduce((sum, s) => sum + (Number(s.plannedTotal) || 0), 0),
+      skillGapsCount: slots.reduce(
+        (sum, s) => sum + (Array.isArray(s.skillGaps) ? s.skillGaps.filter((g) => g.gap > 0).length : 0),
+        0
+      ),
+    };
+  });
 }
 
 export default function PlanningRH({ adminState }) {
@@ -784,11 +647,12 @@ export default function PlanningRH({ adminState }) {
   const [autoBalanceRunning, setAutoBalanceRunning] = useState(false);
   const [autoBalanceMessage, setAutoBalanceMessage] = useState("");
 
-  // ✅ doc.config editor intégré
+  // ✅ Éditeur JSON doc.config
   const [showConfigEditor, setShowConfigEditor] = useState(false);
-  const [configDraft, setConfigDraft] = useState("{}");
-  const [configEditorError, setConfigEditorError] = useState("");
-  const [configEditorInfo, setConfigEditorInfo] = useState("");
+  const [docConfigText, setDocConfigText] = useState("{}");
+  const [docConfigError, setDocConfigError] = useState("");
+  const [docConfigSavedMsg, setDocConfigSavedMsg] = useState("");
+  const [docConfigDirty, setDocConfigDirty] = useState(false);
 
   const normalizedSite = useMemo(
     () => String(siteCode || "").trim().toLowerCase(),
@@ -800,7 +664,6 @@ export default function PlanningRH({ adminState }) {
     [weekStartMonday]
   );
 
-  // map clé jour -> label date (ordre UI)
   const displayDayMeta = useMemo(() => {
     return DAY_KEYS_UI_ORDER.map((k, idx) => ({
       key: k,
@@ -835,7 +698,6 @@ export default function PlanningRH({ adminState }) {
           };
         }
       } catch (e) {
-        // fallback local si table n'existe pas encore / RLS pas prêt
         console.warn("[PlanningRH] remote load fallback local:", e?.message || e);
       }
 
@@ -886,7 +748,6 @@ export default function PlanningRH({ adminState }) {
           }))
         : [];
 
-      // config optionnelle
       loaded.config = loaded.config && typeof loaded.config === "object" ? loaded.config : {};
 
       setDoc(loaded);
@@ -901,13 +762,16 @@ export default function PlanningRH({ adminState }) {
     loadWeek();
   }, [loadWeek]);
 
-  // sync config editor draft with current doc.config
+  // ---------- sync editor text when doc.config changes (if not actively dirty)
   useEffect(() => {
-    const cfg = normalizeDocConfig(doc?.config || {});
-    setConfigDraft(JSON.stringify(cfg, null, 2));
-    setConfigEditorError("");
-    setConfigEditorInfo("");
-  }, [doc?.config, weekStartMonday, normalizedSite]);
+    if (docConfigDirty && showConfigEditor) return;
+    try {
+      setDocConfigText(JSON.stringify(doc?.config || {}, null, 2));
+      setDocConfigError("");
+    } catch {
+      setDocConfigText("{}");
+    }
+  }, [doc?.config, showConfigEditor, docConfigDirty]);
 
   // ---------- auto-ajout collaborateurs depuis DriveOps (1 fois après load)
   useEffect(() => {
@@ -947,7 +811,6 @@ export default function PlanningRH({ adminState }) {
     setAutoAddFromDriveOpsDone(true);
   }, [loading, autoAddFromDriveOpsDone, doc?.rows, preparateursList, coordosList]);
 
-  // reset auto-merge flag when week/site changes
   useEffect(() => {
     setAutoAddFromDriveOpsDone(false);
   }, [weekStartMonday, normalizedSite]);
@@ -956,7 +819,6 @@ export default function PlanningRH({ adminState }) {
   useEffect(() => {
     if (!doc || !normalizedSite || !weekStartMonday) return;
 
-    // local backup
     try {
       localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
     } catch {}
@@ -985,6 +847,80 @@ export default function PlanningRH({ adminState }) {
 
     return () => clearTimeout(t);
   }, [doc, normalizedSite, weekStartMonday]);
+
+  // ---------- doc.config editor actions
+  const handleToggleConfigEditor = useCallback(() => {
+    setShowConfigEditor((v) => {
+      const next = !v;
+      if (!v) {
+        try {
+          setDocConfigText(JSON.stringify(doc?.config || {}, null, 2));
+          setDocConfigError("");
+          setDocConfigSavedMsg("");
+          setDocConfigDirty(false);
+        } catch {
+          setDocConfigText("{}");
+        }
+      }
+      return next;
+    });
+  }, [doc?.config]);
+
+  const handleFormatDocConfig = useCallback(() => {
+    setDocConfigError("");
+    setDocConfigSavedMsg("");
+    try {
+      const parsed = JSON.parse(docConfigText || "{}");
+      setDocConfigText(JSON.stringify(parsed, null, 2));
+      setDocConfigDirty(true);
+    } catch (e) {
+      setDocConfigError(`JSON invalide : ${e?.message || e}`);
+    }
+  }, [docConfigText]);
+
+  const handleApplyDocConfig = useCallback(() => {
+    setDocConfigError("");
+    setDocConfigSavedMsg("");
+    try {
+      const parsed = JSON.parse(docConfigText || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Le doc.config doit être un objet JSON");
+      }
+
+      setDoc((prev) => ({
+        ...prev,
+        config: parsed,
+        updatedAt: new Date().toISOString(),
+      }));
+
+      setDocConfigText(JSON.stringify(parsed, null, 2));
+      setDocConfigDirty(false);
+      setDocConfigSavedMsg("doc.config appliqué ✅");
+      setAnalysisRefreshTick((x) => x + 1);
+    } catch (e) {
+      setDocConfigError(`JSON invalide : ${e?.message || e}`);
+    }
+  }, [docConfigText]);
+
+  const handleResetDocConfig = useCallback(() => {
+    const ok = window.confirm("Réinitialiser doc.config à {} ?");
+    if (!ok) return;
+    setDocConfigText("{}");
+    setDocConfigDirty(true);
+    setDocConfigError("");
+    setDocConfigSavedMsg("");
+  }, []);
+
+  const handleCopyDocConfig = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(docConfigText || "{}");
+      setDocConfigSavedMsg("JSON copié ✅");
+      setTimeout(() => setDocConfigSavedMsg(""), 1200);
+    } catch {
+      setDocConfigSavedMsg("Copie impossible (navigateur) ⚠️");
+      setTimeout(() => setDocConfigSavedMsg(""), 1500);
+    }
+  }, [docConfigText]);
 
   // ---------- mutations
   const upsertRow = useCallback((rowId, patch) => {
@@ -1086,50 +1022,6 @@ export default function PlanningRH({ adminState }) {
     [selectedRowId, selectedDayKey, setCell]
   );
 
-  // ---------- doc.config editor actions
-  const handleFormatConfigDraft = useCallback(() => {
-    const parsed = parseJSONSafe(configDraft, null);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      setConfigEditorError("JSON invalide (objet attendu).");
-      setConfigEditorInfo("");
-      return;
-    }
-    setConfigDraft(JSON.stringify(parsed, null, 2));
-    setConfigEditorError("");
-    setConfigEditorInfo("JSON formaté ✅");
-  }, [configDraft]);
-
-  const handleApplyConfigDraft = useCallback(() => {
-    const parsed = parseJSONSafe(configDraft, null);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      setConfigEditorError("JSON invalide (objet attendu).");
-      setConfigEditorInfo("");
-      return;
-    }
-
-    setDoc((prev) => ({
-      ...prev,
-      config: parsed,
-      updatedAt: new Date().toISOString(),
-    }));
-    setAnalysisRefreshTick((x) => x + 1);
-    setConfigEditorError("");
-    setConfigEditorInfo("doc.config appliqué au planning ✅");
-  }, [configDraft]);
-
-  const handleResetConfig = useCallback(() => {
-    const ok = window.confirm("Réinitialiser doc.config à {} ?");
-    if (!ok) return;
-    setDoc((prev) => ({
-      ...prev,
-      config: {},
-      updatedAt: new Date().toISOString(),
-    }));
-    setAnalysisRefreshTick((x) => x + 1);
-    setConfigEditorError("");
-    setConfigEditorInfo("doc.config réinitialisé ✅");
-  }, []);
-
   // ---------- vues calculées
   const filteredRows = useMemo(() => {
     const q = normalizeName(search);
@@ -1153,7 +1045,6 @@ export default function PlanningRH({ adminState }) {
     });
   }, [filteredRows]);
 
-  // Analyse RH = sur TOUT le planning (pas seulement les lignes filtrées UI)
   const allRowsWithStats = useMemo(() => {
     return (doc.rows || []).map((r) => {
       const weeklyMin = computeRowWeeklyMinutes(r.cells);
@@ -1199,7 +1090,6 @@ export default function PlanningRH({ adminState }) {
   const compactAlerts = useMemo(() => {
     const arr = [];
 
-    // warnings analyzer
     const aw = analysisResult?.analysis?.warnings || [];
     for (const w of aw.slice(0, 8)) {
       arr.push({
@@ -1208,7 +1098,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // rules violations
     const rv = analysisResult?.rules?.violations || [];
     for (const v of rv.slice(0, 8)) {
       arr.push({
@@ -1217,8 +1106,7 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // coverage gaps (top)
-    const cg = (analysisResult?.analysis?.coverageGaps || []).slice(0, 6);
+    const cg = (analysisResult?.analysis?.coverageGaps || []).slice(0, 8);
     for (const g of cg) {
       arr.push({
         level: g.severity || "warning",
@@ -1226,7 +1114,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // fallback simple if no util output
     if (arr.length === 0) {
       const majorDiff = (allRowsWithStats || [])
         .filter((r) => Math.abs(r.diffMin) >= 120)
@@ -1245,19 +1132,12 @@ export default function PlanningRH({ adminState }) {
 
   const topCoverageGaps = useMemo(() => {
     return [...(analysisResult?.analysis?.coverageGaps || [])]
-      .sort((a, b) => (b.gap || 0) - (a.gap || 0))
-      .slice(0, 6);
+      .sort((a, b) => (Number(b.gap) || 0) - (Number(a.gap) || 0))
+      .slice(0, 8);
   }, [analysisResult]);
 
   const coverageByDayMini = useMemo(() => {
-    const byDay = analysisResult?.analysis?.coverageSummary?.byDay || {};
-    return DAY_KEYS_MON_START.map((k) => ({
-      dayKey: k,
-      totalGap: byDay?.[k]?.totalGap || 0,
-      totalNeed: byDay?.[k]?.totalNeed || 0,
-      totalPlanned: byDay?.[k]?.totalPlanned || 0,
-      skillGapsCount: byDay?.[k]?.skillGapsCount || 0,
-    }));
+    return deriveCoverageByDayMini(analysisResult?.analysis);
   }, [analysisResult]);
 
   const handleRunAutoBalance = useCallback(async () => {
@@ -1267,19 +1147,21 @@ export default function PlanningRH({ adminState }) {
     setAutoBalanceMessage("");
 
     try {
-      const input = {
-        ...analysisInput,
-        rows: doc.rows || [],
-        options: {
+      const result = runAutoBalance(
+        {
+          ...analysisInput,
+          rows: doc.rows || [],
+        },
+        {
           mode: "contract-balance",
           toleranceMinutes: 30,
           keepAbsenceCodes: true,
           preserveManualCodes: true,
+          allowSetRestOnOverplan: true,
           rebalanceCoverage: true,
-        },
-      };
-
-      const result = runAutoBalance(input);
+          maxPatches: 80,
+        }
+      );
 
       if (!result) {
         setAutoBalanceMessage("Auto-balance indisponible (utilitaire non exposé ou pas encore finalisé).");
@@ -1321,14 +1203,12 @@ export default function PlanningRH({ adminState }) {
     }
   }, [autoBalanceRunning, analysisInput, doc.rows]);
 
-  // ---------- impression A4 paysage (v2+)
   const handlePrint = useCallback(() => {
     try {
       window.print();
     } catch {}
   }, []);
 
-  // ---------- style inline minimal (cohérent Cockpit)
   const ui = {
     page: {
       maxWidth: 1460,
@@ -1379,6 +1259,16 @@ export default function PlanningRH({ adminState }) {
       fontWeight: 700,
       whiteSpace: "nowrap",
     },
+    btnSuccess: {
+      background: "linear-gradient(180deg, #10b981, #059669)",
+      color: "#fff",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "8px 10px",
+      cursor: "pointer",
+      fontWeight: 700,
+      whiteSpace: "nowrap",
+    },
     input: {
       width: "100%",
       background: "#0f172a",
@@ -1388,22 +1278,6 @@ export default function PlanningRH({ adminState }) {
       padding: "8px 10px",
       outline: "none",
       boxSizing: "border-box",
-    },
-    textarea: {
-      width: "100%",
-      minHeight: 240,
-      resize: "vertical",
-      background: "#0b1220",
-      color: "#e5e7eb",
-      border: "1px solid rgba(255,255,255,0.14)",
-      borderRadius: 12,
-      padding: "10px 12px",
-      outline: "none",
-      boxSizing: "border-box",
-      fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      fontSize: 12,
-      lineHeight: 1.4,
     },
     th: {
       position: "sticky",
@@ -1428,6 +1302,22 @@ export default function PlanningRH({ adminState }) {
       padding: "8px 10px",
       minWidth: 150,
     },
+    textarea: {
+      width: "100%",
+      minHeight: 300,
+      resize: "vertical",
+      background: "#0b1220",
+      color: "#dbeafe",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 12,
+      padding: "10px 12px",
+      fontFamily:
+        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontSize: 12,
+      lineHeight: 1.45,
+      outline: "none",
+      boxSizing: "border-box",
+    },
   };
 
   const statusBadge = useMemo(() => {
@@ -1441,12 +1331,16 @@ export default function PlanningRH({ adminState }) {
   const estimatedCost =
     analysisResult?.analysis?.costs?.totalEstimated ??
     analysisResult?.analysis?.summary?.estimatedPayrollCost ??
+    analysisResult?.analysis?.summary?.estimatedCost ??
     0;
 
   const violationsCount = (analysisResult?.rules?.violations || []).length;
   const rulesWarningsCount = (analysisResult?.rules?.warnings || []).length;
   const analyzerWarningsCount = (analysisResult?.analysis?.warnings || []).length;
-  const coverageGapsCount = (analysisResult?.analysis?.coverageGaps || []).length;
+  const coverageGapsCount =
+    analysisResult?.analysis?.summary?.coverageGapsCount ??
+    analysisResult?.analysis?.summary?.coverageGapCount ??
+    (analysisResult?.analysis?.coverageGaps || []).length;
   const skillGapsCount =
     analysisResult?.analysis?.summary?.skillCoverageGapsCount ||
     (analysisResult?.analysis?.coverageGaps || []).filter((g) => g.type === "coverage_skill_gap").length;
@@ -1522,11 +1416,11 @@ export default function PlanningRH({ adminState }) {
               </button>
 
               <button
-                style={ui.btn}
-                onClick={() => setShowConfigEditor((v) => !v)}
+                style={ui.btnSuccess}
+                onClick={handleToggleConfigEditor}
                 title="Afficher / masquer l’éditeur JSON doc.config"
               >
-                {showConfigEditor ? "🧩 Masquer doc.config" : "🧩 Éditer doc.config"}
+                {showConfigEditor ? "✖ Fermer doc.config" : "🧩 Éditer doc.config"}
               </button>
             </div>
 
@@ -1580,6 +1474,100 @@ export default function PlanningRH({ adminState }) {
           </div>
         ) : null}
       </div>
+
+      {/* Éditeur doc.config JSON */}
+      {showConfigEditor && (
+        <div style={ui.card} className="planning-print-hide">
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 10,
+              flexWrap: "wrap",
+              alignItems: "center",
+              marginBottom: 10,
+            }}
+          >
+            <div>
+              <h2 style={{ margin: 0, fontSize: 16 }}>🧩 Éditeur JSON — doc.config</h2>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                Configure couverture, besoins par créneau, compétences et coûts pour l’analyse RH
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={ui.btn} onClick={handleFormatDocConfig}>✨ Formatter</button>
+              <button style={ui.btn} onClick={handleCopyDocConfig}>📋 Copier</button>
+              <button style={ui.btn} onClick={handleResetDocConfig}>♻️ Reset {"{}"}</button>
+              <button style={ui.btnPrimary} onClick={handleApplyDocConfig}>💾 Appliquer doc.config</button>
+            </div>
+          </div>
+
+          <textarea
+            value={docConfigText}
+            onChange={(e) => {
+              setDocConfigText(e.target.value);
+              setDocConfigDirty(true);
+              setDocConfigSavedMsg("");
+              setDocConfigError("");
+            }}
+            style={ui.textarea}
+            spellCheck={false}
+            placeholder={`{
+  "coverageConfig": { "from": "06:00", "to": "21:30", "slotMinutes": 30 },
+  "requirementsByDaySlot": {
+    "mon": {
+      "06:00-06:30": { "total": 2, "skills": { "drive": 1 } }
+    }
+  },
+  "costing": {
+    "defaultHourlyRate": 12.5,
+    "hourlyRatesByRole": { "prep": 12.5, "coordo": 15.0 }
+  }
+}`}
+          />
+
+          {docConfigError ? (
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 12,
+                color: "#fecaca",
+                border: "1px solid rgba(239,68,68,0.25)",
+                background: "rgba(239,68,68,0.08)",
+                borderRadius: 10,
+                padding: "8px 10px",
+              }}
+            >
+              ❌ {docConfigError}
+            </div>
+          ) : null}
+
+          {docConfigSavedMsg ? (
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 12,
+                color: "#bbf7d0",
+                border: "1px solid rgba(16,185,129,0.25)",
+                background: "rgba(16,185,129,0.08)",
+                borderRadius: 10,
+                padding: "8px 10px",
+              }}
+            >
+              ✅ {docConfigSavedMsg}
+            </div>
+          ) : null}
+
+          <div style={{ marginTop: 10, fontSize: 11, opacity: 0.72, lineHeight: 1.45 }}>
+            Conseils :
+            <br />• <code>coverageConfig</code> définit la plage analysée (ex. 06:00 → 21:30) et la taille des créneaux.
+            <br />• <code>requirementsByDaySlot</code> porte les besoins par jour / créneau.
+            <br />• <code>costing</code> permet d’estimer la masse salariale par rôle.
+            <br />• Tu peux aussi ajouter <code>rhRules</code> (max amplitude, repos mini, etc.) pour les règles RH.
+          </div>
+        </div>
+      )}
 
       {/* Analyse Sprint 3 PRO */}
       {showAnalysisPanel && (
@@ -1658,8 +1646,7 @@ export default function PlanningRH({ adminState }) {
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {coverageByDayMini.map((d) => {
-                  const tone =
-                    d.totalGap > 0 ? "#fca5a5" : d.totalNeed > 0 ? "#86efac" : "#cbd5e1";
+                  const tone = d.totalGap > 0 ? "#fca5a5" : d.totalNeed > 0 ? "#86efac" : "#cbd5e1";
 
                   return (
                     <div
@@ -1704,7 +1691,7 @@ export default function PlanningRH({ adminState }) {
               <div style={{ display: "grid", gap: 6 }}>
                 {topCoverageGaps.map((g, i) => (
                   <div
-                    key={`${g.type}-${g.dayKey}-${g.slotKey}-${g.skill || "total"}-${i}`}
+                    key={`${g.type}-${g.dayKey}-${g.slotKey}-${g.skill || g.role || "total"}-${i}`}
                     style={{
                       borderRadius: 8,
                       border: "1px solid rgba(255,255,255,0.06)",
@@ -1761,102 +1748,12 @@ export default function PlanningRH({ adminState }) {
           <div style={{ marginTop: 10, fontSize: 11, opacity: 0.7 }}>
             Notes: les besoins/compétences/coûts s’activent automatiquement si <code>doc.config</code> est
             renseigné. Sans config, l’écran reste fonctionnel (fallback).
-            {(analyzerWarningsCount || rulesWarningsCount) ? (
+            {analyzerWarningsCount || rulesWarningsCount ? (
               <span>
                 {" "}
                 • Warnings: analyse {analyzerWarningsCount} / règles {rulesWarningsCount}
               </span>
             ) : null}
-          </div>
-        </div>
-      )}
-
-      {/* ✅ Éditeur JSON doc.config */}
-      {showConfigEditor && (
-        <div style={ui.card} className="planning-print-hide">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              gap: 10,
-              flexWrap: "wrap",
-              alignItems: "center",
-              marginBottom: 10,
-            }}
-          >
-            <div>
-              <h2 style={{ margin: 0, fontSize: 16 }}>🧩 Éditeur doc.config (JSON)</h2>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                Configure besoins par créneau, compétences, couverture, coûts (stocké dans le planning de la semaine)
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button style={ui.btn} onClick={handleFormatConfigDraft}>
-                ✨ Formatter JSON
-              </button>
-              <button style={ui.btnPrimary} onClick={handleApplyConfigDraft}>
-                ✅ Appliquer doc.config
-              </button>
-              <button style={ui.btn} onClick={handleResetConfig}>
-                ♻️ Reset {}
-              </button>
-            </div>
-          </div>
-
-          <textarea
-            style={ui.textarea}
-            value={configDraft}
-            onChange={(e) => {
-              setConfigDraft(e.target.value);
-              if (configEditorError) setConfigEditorError("");
-              if (configEditorInfo) setConfigEditorInfo("");
-            }}
-            spellCheck={false}
-            placeholder={`{
-  "coverage": { "from": "06:00", "to": "22:00", "slotMinutes": 30 },
-  "costing": { "defaultHourlyRate": 12.5, "hourlyRatesByRole": { "prep": 12.3, "coordo": 14.8 } },
-  "needsBySlot": { "mon": { "06:00-06:30": 2 } },
-  "skillCoverageBySlot": { "mon": { "08:00-08:30": { "drive": 1 } } }
-}`}
-          />
-
-          {configEditorError ? (
-            <div
-              style={{
-                marginTop: 8,
-                fontSize: 12,
-                color: "#fca5a5",
-                border: "1px solid rgba(239,68,68,0.25)",
-                background: "rgba(239,68,68,0.08)",
-                borderRadius: 10,
-                padding: "8px 10px",
-              }}
-            >
-              ❌ {configEditorError}
-            </div>
-          ) : null}
-
-          {configEditorInfo ? (
-            <div
-              style={{
-                marginTop: 8,
-                fontSize: 12,
-                color: "#86efac",
-                border: "1px solid rgba(134,239,172,0.2)",
-                background: "rgba(134,239,172,0.08)",
-                borderRadius: 10,
-                padding: "8px 10px",
-              }}
-            >
-              {configEditorInfo}
-            </div>
-          ) : null}
-
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8, lineHeight: 1.45 }}>
-            <div>• <b>Ce JSON est intégré dans le planning hebdo</b> (<code>doc.config</code>) : ce n’est pas un fichier séparé.</div>
-            <div>• Il est sauvegardé avec la semaine (local + Supabase si la table est prête).</div>
-            <div>• L’analyse RH et l’auto-balance utilisent ce JSON si présent.</div>
           </div>
         </div>
       )}
@@ -2081,8 +1978,7 @@ export default function PlanningRH({ adminState }) {
                           border = "1px solid rgba(239,68,68,0.22)";
                         }
 
-                        const isSelected =
-                          selectedRowId === row.id && selectedDayKey === dayKey;
+                        const isSelected = selectedRowId === row.id && selectedDayKey === dayKey;
 
                         return (
                           <td key={`${row.id}-${dayKey}`} style={ui.td}>
@@ -2112,7 +2008,6 @@ export default function PlanningRH({ adminState }) {
                                 onChange={(e) => setCell(row.id, dayKey, e.target.value)}
                               />
 
-                              {/* Preview split pour impression murale (créneau + badge code séparés) */}
                               <div
                                 className={`planning-cell-print-preview kind-${printable.kind}`}
                                 aria-hidden="true"
@@ -2202,8 +2097,8 @@ export default function PlanningRH({ adminState }) {
           • Tu peux ajouter un badge suffixe (ex. <b>/DRIVE</b>, <b>/CAISSE</b>) pour l’affichage mural.<br />
           • Les codes RH / CP / OFF / AT / MAL / ABS ne comptent pas d’heures.<br />
           • Sélectionne une cellule puis utilise les boutons “Affectation rapide”.<br />
-          • Le panneau Analyse Sprint 3 lit tes utilitaires si disponibles, sinon fallback local.<br />
-          • Les besoins par créneau / compétences / coûts s’activent via <b>doc.config</b> (éditeur JSON intégré).
+          • Le panneau Analyse Sprint 3 lit <b>doc.config</b> (couverture, besoins, coûts) si renseigné.<br />
+          • L’auto-balance utilise aussi l’analyse de couverture pour prioriser les ajustements.
         </div>
       </div>
 
@@ -2327,12 +2222,10 @@ export default function PlanningRH({ adminState }) {
             background: #fff !important;
           }
 
-          /* inputs de saisie masqués uniquement sur cellules planning */
           .planning-rh-page .planning-cell-input {
             display: none !important;
           }
 
-          /* mais conserver lisibilité nom/contrat/notes par défaut via styles existants */
           .planning-rh-page td input:not(.planning-cell-input) {
             border: none !important;
             background: transparent !important;
@@ -2346,7 +2239,6 @@ export default function PlanningRH({ adminState }) {
             color: transparent !important;
           }
 
-          /* preview impression mural */
           .planning-rh-page .planning-cell-print-preview {
             display: flex !important;
             flex-direction: column !important;

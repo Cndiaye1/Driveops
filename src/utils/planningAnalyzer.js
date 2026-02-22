@@ -1,18 +1,19 @@
 // src/utils/planningAnalyzer.js
 /* =========================================================
-   planningAnalyzer.js — Sprint 3 PRO / stable signatures (v2 compat)
+   planningAnalyzer.js — Sprint 3 PRO / stable signatures
    Exports:
    - analyzePlanning(input, options?)
    - aliases: analyzeWeekPlanning, getPlanningAnalysis, computePlanningAnalysis
    - default = analyzePlanning
 
-   ✅ Compat ajoutée :
-   - Lit doc.config / planningDoc.config (coverage, needsBySlot, skillCoverageBySlot, costing)
-   - Retourne coverageSummary.byDay
-   - Retourne costs.totalEstimated + byRole
-   - Retourne aliases summary attendus par UI/AutoBalance:
-     coverageGapsCount, skillCoverageGapsCount, estimatedPayrollCost
-   - needsBySlot inclut slotStart / slotEnd (compat planningAutoBalance)
+   ✅ Concordance PlanningRH + AutoBalance
+   - Lit doc.config via input.docConfig / input.planningDoc.config
+   - Lit requirementsByDaySlot depuis doc.config
+   - Expose coverageSummary.byDay (attendu par PlanningRH)
+   - Expose summary.coverageGapsCount + coverageGapCount (compat)
+   - Expose summary.estimatedPayrollCost (compat)
+   - Expose needsBySlot.slotStart / slotEnd (attendu par AutoBalance)
+   - coverageGaps avec types: coverage_total_gap / coverage_skill_gap / coverage_role_gap
    ========================================================= */
 
 const DAY_KEYS_MON_START_DEFAULT = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -54,48 +55,143 @@ function normalizeDayKeys(input) {
     : DAY_KEYS_MON_START_DEFAULT;
 }
 
+function normalizeCellString(v) {
+  return String(v || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[H]/g, ":")
+    .replace(/\s+/g, "");
+}
+
 function parseShiftCell(cell) {
   const raw0 = String(cell || "").trim();
   const raw = raw0.toUpperCase();
-  if (!raw) return { kind: "empty", raw, durationMin: 0 };
+  const normalized = normalizeCellString(raw0);
 
-  if (ABSENCE_CODES.has(raw)) {
-    return { kind: "absence", raw, code: raw, durationMin: 0 };
+  if (!normalized) {
+    return {
+      kind: "empty",
+      type: "empty",
+      raw,
+      normalized,
+      durationMin: 0,
+      isWork: false,
+      isAbsence: false,
+      code: "",
+      start: "",
+      end: "",
+      startHHMM: "",
+      endHHMM: "",
+    };
   }
 
-  const normalized = raw.replaceAll("H", ":").replace(/\s+/g, "");
+  if (ABSENCE_CODES.has(normalized)) {
+    return {
+      kind: "absence",
+      type: "absence",
+      raw,
+      normalized,
+      code: normalized,
+      absenceCode: normalized,
+      durationMin: 0,
+      isWork: false,
+      isAbsence: true,
+      start: "",
+      end: "",
+      startHHMM: "",
+      endHHMM: "",
+    };
+  }
+
   const m = normalized.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\/([A-Z0-9_-]+))?$/);
-  if (!m) return { kind: "unknown", raw, durationMin: 0 };
+  if (!m) {
+    return {
+      kind: "unknown",
+      type: "invalid",
+      raw,
+      normalized,
+      durationMin: 0,
+      isWork: false,
+      isAbsence: false,
+      code: "",
+      error: "Format invalide",
+      start: "",
+      end: "",
+      startHHMM: "",
+      endHHMM: "",
+    };
+  }
 
   const start = m[1];
   const end = m[2];
   const code = String(m[3] || "").toUpperCase();
+
+  // rétrocompat : suffixe d'absence => considéré absence
   if (code && ABSENCE_CODES.has(code)) {
-    return { kind: "absence", raw, code, start, end, durationMin: 0 };
+    return {
+      kind: "absence",
+      type: "absence",
+      raw,
+      normalized,
+      code,
+      absenceCode: code,
+      start,
+      end,
+      startHHMM: start,
+      endHHMM: end,
+      durationMin: 0,
+      isWork: false,
+      isAbsence: true,
+    };
   }
 
   const startMin = hhmmToMin(start);
-  const endMin = hhmmToMin(end);
-  if (!Number.isFinite(startMin) || !Number.isFinite(endMin)) return { kind: "unknown", raw, durationMin: 0 };
+  const endMinRaw = hhmmToMin(end);
+  if (!Number.isFinite(startMin) || !Number.isFinite(endMinRaw)) {
+    return {
+      kind: "unknown",
+      type: "invalid",
+      raw,
+      normalized,
+      code,
+      durationMin: 0,
+      isWork: false,
+      isAbsence: false,
+      error: "Heure invalide",
+      start,
+      end,
+      startHHMM: start,
+      endHHMM: end,
+    };
+  }
 
-  let durationMin = endMin - startMin;
+  let absoluteEndMin = endMinRaw;
+  let durationMin = endMinRaw - startMin;
   let crossesMidnight = false;
   if (durationMin < 0) {
     durationMin += 1440;
+    absoluteEndMin = endMinRaw + 1440;
     crossesMidnight = true;
   }
 
   return {
     kind: "work",
+    type: "work",
     raw,
+    normalized,
     start,
     end,
+    startHHMM: start,
+    endHHMM: end,
     code,
     startMin,
-    endMin,
-    absoluteEndMin: crossesMidnight ? endMin + 1440 : endMin,
+    endMin: endMinRaw,
+    absoluteEndMin,
     durationMin,
     crossesMidnight,
+    isWork: true,
+    isAbsence: false,
+    valid: true,
   };
 }
 
@@ -109,67 +205,67 @@ function normalizeSkillList(skills) {
   if (Array.isArray(skills)) {
     return skills
       .map((s) => String(s || "").trim().toLowerCase())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((v, i, arr) => arr.indexOf(v) === i);
   }
+
   if (typeof skills === "string") {
     return skills
       .split(/[;,]/)
       .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((v, i, arr) => arr.indexOf(v) === i);
   }
+
   return [];
 }
 
-function getDocConfig(input) {
-  if (input?.docConfig && typeof input.docConfig === "object" && !Array.isArray(input.docConfig)) {
-    return input.docConfig;
-  }
-  if (input?.planningDoc?.config && typeof input.planningDoc.config === "object") {
-    return input.planningDoc.config;
-  }
-  if (input?.doc?.config && typeof input.doc.config === "object") {
-    return input.doc.config;
-  }
-  return {};
+function getConfig(input) {
+  return input?.docConfig || input?.planningDoc?.config || {};
 }
 
 function getHourlyRateForRow(row, input) {
   const direct = Number(row?.hourlyRate);
   if (Number.isFinite(direct) && direct > 0) return direct;
 
-  // Compat ancien format input.defaults.hourlyRateByRole
-  const roleRateLegacy = Number(input?.defaults?.hourlyRateByRole?.[row?.role]);
-  if (Number.isFinite(roleRateLegacy) && roleRateLegacy > 0) return roleRateLegacy;
+  const cfg = getConfig(input);
+  const role = String(row?.role || "prep").toLowerCase();
 
-  // ✅ Nouveau format doc.config.costing.hourlyRatesByRole
-  const docConfig = getDocConfig(input);
-  const role = String(row?.role || "").toLowerCase();
-  const roleRateCfg = Number(docConfig?.costing?.hourlyRatesByRole?.[role]);
-  if (Number.isFinite(roleRateCfg) && roleRateCfg > 0) return roleRateCfg;
+  // 1) flattened defaults (si PlanningRH les injecte)
+  const flatRoleRate = Number(input?.defaults?.hourlyRateByRole?.[role]);
+  if (Number.isFinite(flatRoleRate) && flatRoleRate > 0) return flatRoleRate;
 
-  const fallbackLegacy = Number(input?.defaults?.hourlyRate);
-  if (Number.isFinite(fallbackLegacy) && fallbackLegacy > 0) return fallbackLegacy;
+  const flatDefault = Number(input?.defaults?.hourlyRate);
+  if (Number.isFinite(flatDefault) && flatDefault > 0) return flatDefault;
 
-  const fallbackCfg = Number(docConfig?.costing?.defaultHourlyRate);
-  if (Number.isFinite(fallbackCfg) && fallbackCfg > 0) return fallbackCfg;
+  // 2) doc.config.costing
+  const cfgRoleRate = Number(cfg?.costing?.hourlyRatesByRole?.[role]);
+  if (Number.isFinite(cfgRoleRate) && cfgRoleRate > 0) return cfgRoleRate;
+
+  const cfgDefault = Number(cfg?.costing?.defaultHourlyRate);
+  if (Number.isFinite(cfgDefault) && cfgDefault > 0) return cfgDefault;
 
   return 0;
 }
 
 function normalizeCoverageConfig(input, options) {
-  const docConfig = getDocConfig(input);
+  const cfg = getConfig(input);
 
   const c = {
+    ...(cfg?.defaults?.coverage || {}),
+    ...(cfg?.coverage || {}),
+    ...(cfg?.coverageConfig || {}),
+
     ...(input?.defaults?.coverage || {}),
     ...(input?.coverageConfig || {}),
-    ...(docConfig?.coverage || {}),
-    ...(docConfig?.coverageWindow || {}),
+
     ...(options?.coverage || {}),
   };
 
   const slotMinutes = Math.max(15, Number(c.slotMinutes) || 30);
   const from = String(c.from || "06:00");
   const to = String(c.to || "22:00");
+
   const fromMin = hhmmToMin(from);
   let toMin = hhmmToMin(to);
 
@@ -181,65 +277,24 @@ function normalizeCoverageConfig(input, options) {
 }
 
 /**
- * Requirements formats supported:
- * - requirementsByDaySlot[dayKey][slotKey] = number
- * - requirementsByDaySlot[dayKey][slotKey] = { total, roles, skills }
- * - doc.config.needsBySlot + doc.config.skillCoverageBySlot (merged here)
+ * Formats supportés :
+ * - input.requirementsByDaySlot
+ * - input.docConfig.requirementsByDaySlot
+ * - input.planningDoc.config.requirementsByDaySlot
+ * - input.doc.requirementsByDaySlot
+ * - input.coverageRequirements
  */
 function normalizeRequirements(input) {
-  const direct =
+  const cfg = getConfig(input);
+
+  return (
     input?.requirementsByDaySlot ||
+    cfg?.requirementsByDaySlot ||
     input?.doc?.requirementsByDaySlot ||
+    input?.planningDoc?.requirementsByDaySlot ||
     input?.coverageRequirements ||
-    null;
-
-  const docConfig = getDocConfig(input);
-  const needsBySlot =
-    docConfig?.needsBySlot && typeof docConfig.needsBySlot === "object" ? docConfig.needsBySlot : {};
-  const skillCoverageBySlot =
-    docConfig?.skillCoverageBySlot && typeof docConfig.skillCoverageBySlot === "object"
-      ? docConfig.skillCoverageBySlot
-      : {};
-
-  // If direct is present, keep it (already pre-normalized by caller usually)
-  if (direct && typeof direct === "object") return direct;
-
-  const merged = {};
-  for (const dayKey of DAY_KEYS_MON_START_DEFAULT) {
-    const dayNeeds = needsBySlot?.[dayKey];
-    const daySkills = skillCoverageBySlot?.[dayKey];
-
-    const dayOut = {};
-    const slotKeys = new Set([
-      ...Object.keys(dayNeeds && typeof dayNeeds === "object" ? dayNeeds : {}),
-      ...Object.keys(daySkills && typeof daySkills === "object" ? daySkills : {}),
-    ]);
-
-    for (const slotKey of slotKeys) {
-      const n = dayNeeds?.[slotKey];
-      const s = daySkills?.[slotKey];
-
-      let base = {};
-      if (typeof n === "number") {
-        base = { total: Math.max(0, Number(n) || 0) };
-      } else if (n && typeof n === "object") {
-        base = { ...n };
-      }
-
-      if (s && typeof s === "object") {
-        base.skills = {
-          ...(base.skills && typeof base.skills === "object" ? base.skills : {}),
-          ...s,
-        };
-      }
-
-      if (Object.keys(base).length > 0) dayOut[slotKey] = base;
-    }
-
-    if (Object.keys(dayOut).length > 0) merged[dayKey] = dayOut;
-  }
-
-  return merged;
+    {}
+  );
 }
 
 function resolveRequirementForSlot(requirementsByDaySlot, dayKey, slotStartMin, slotEndMin) {
@@ -283,25 +338,25 @@ function resolveRequirementForSlot(requirementsByDaySlot, dayKey, slotStartMin, 
   return { total: 0, roles: {}, skills: {} };
 }
 
-function rowWorksOnSlot(row, dayKey, slotStartMin) {
+function rowWorksOnSlot(row, dayKey, slotStartMin, slotEndMin) {
   const parsed = parseShiftCell(row?.cells?.[dayKey]);
   if (parsed.kind !== "work") return false;
 
-  // overnight: slot coverage limited to same-day window [start,24h)
-  if (parsed.crossesMidnight) {
-    return slotStartMin >= parsed.startMin;
-  }
+  // Fenêtre du shift sur l'axe du jour
+  const shiftStart = parsed.startMin;
+  const shiftEnd = parsed.crossesMidnight ? 1440 : parsed.endMin;
 
-  return slotStartMin >= parsed.startMin && slotStartMin < parsed.endMin;
+  // Recouvrement de créneau
+  return slotStartMin < shiftEnd && slotEndMin > shiftStart;
 }
 
-function aggregateCoverageForSlot(rows, dayKey, slotStartMin) {
-  const plannedRows = rows.filter((r) => rowWorksOnSlot(r, dayKey, slotStartMin));
+function aggregateCoverageForSlot(rows, dayKey, slotStartMin, slotEndMin) {
+  const plannedRows = rows.filter((r) => rowWorksOnSlot(r, dayKey, slotStartMin, slotEndMin));
   const plannedTotal = plannedRows.length;
 
   const plannedRoles = {};
   const plannedSkills = {};
-  const codes = {};
+  const plannedCodes = {};
 
   for (const r of plannedRows) {
     const role = String(r?.role || "prep").toLowerCase();
@@ -313,53 +368,41 @@ function aggregateCoverageForSlot(rows, dayKey, slotStartMin) {
     const parsed = parseShiftCell(r?.cells?.[dayKey]);
     if (parsed.code) {
       const code = String(parsed.code).toLowerCase();
-      codes[code] = (codes[code] || 0) + 1;
+      plannedCodes[code] = (plannedCodes[code] || 0) + 1;
     }
   }
 
-  return { plannedRows, plannedTotal, plannedRoles, plannedSkills, codes };
+  return { plannedRows, plannedTotal, plannedRoles, plannedSkills, plannedCodes };
 }
 
-function buildCoverageSummary(dayKeys, needsBySlot, coverageGaps) {
+function makeCoverageSummarySkeleton(dayKeys) {
   const byDay = {};
-
-  for (const dayKey of dayKeys) {
-    byDay[dayKey] = {
+  for (const dk of dayKeys) {
+    byDay[dk] = {
       totalNeed: 0,
       totalPlanned: 0,
       totalGap: 0,
       roleGapsCount: 0,
       skillGapsCount: 0,
-      slotCount: 0,
+      slotsCount: 0,
+      slotsWithNeedCount: 0,
       slotsWithGapCount: 0,
     };
   }
 
-  for (const slot of needsBySlot) {
-    const dk = slot?.dayKey;
-    if (!byDay[dk]) continue;
-
-    byDay[dk].totalNeed += Number(slot.requiredTotal || 0);
-    byDay[dk].totalPlanned += Number(slot.plannedTotal || 0);
-    byDay[dk].totalGap += Number(slot.totalGap || 0);
-    byDay[dk].slotCount += 1;
-    byDay[dk].roleGapsCount += Array.isArray(slot.roleGaps)
-      ? slot.roleGaps.filter((g) => Number(g?.gap || 0) > 0).length
-      : 0;
-    byDay[dk].skillGapsCount += Array.isArray(slot.skillGaps)
-      ? slot.skillGaps.filter((g) => Number(g?.gap || 0) > 0).length
-      : 0;
-  }
-
-  for (const g of coverageGaps) {
-    const dk = g?.dayKey;
-    if (!byDay[dk]) continue;
-    if (g?.type === "coverage_total_gap" || g?.type === "coverage_skill_gap") {
-      byDay[dk].slotsWithGapCount += 1;
-    }
-  }
-
-  return { byDay };
+  return {
+    byDay,
+    totals: {
+      totalNeed: 0,
+      totalPlanned: 0,
+      totalGap: 0,
+      roleGapsCount: 0,
+      skillGapsCount: 0,
+      slotsCount: 0,
+      slotsWithNeedCount: 0,
+      slotsWithGapCount: 0,
+    },
+  };
 }
 
 export function analyzePlanning(input = {}, options = {}) {
@@ -368,7 +411,9 @@ export function analyzePlanning(input = {}, options = {}) {
   const coverageCfg = normalizeCoverageConfig(input, options);
   const requirementsByDaySlot = normalizeRequirements(input);
 
-  // Row stats + contract deltas + cost
+  // =============================
+  // 1) Stats par ligne / contrats / coûts
+  // =============================
   const rowStats = rows.map((r) => {
     const weeklyMinutes = Number(r?.weeklyMinutes) || getWeeklyMinutes(r?.cells || {}, dayKeys);
     const contractHours = Number(r?.contractHours) || 0;
@@ -381,7 +426,9 @@ export function analyzePlanning(input = {}, options = {}) {
       rowId: r?.id || null,
       name: r?.name || "",
       role: r?.role || "prep",
+      skills: normalizeSkillList(r?.skills),
       weeklyMinutes,
+      weeklyHours: Math.round((weeklyMinutes / 60) * 100) / 100,
       contractHours,
       targetMin,
       deltaMin,
@@ -400,18 +447,21 @@ export function analyzePlanning(input = {}, options = {}) {
         staff: st.name,
         rowId: st.rowId,
         deltaMinutes: st.deltaMin,
-        message: `${st.name || "Collaborateur"} : écart contrat ${st.deltaMin > 0 ? "+" : ""}${minutesToHourLabel(
-          st.deltaMin
-        )}`,
+        message: `${st.name || "Collaborateur"} : écart contrat ${
+          st.deltaMin > 0 ? "+" : ""
+        }${minutesToHourLabel(st.deltaMin)}`,
       });
     }
   }
 
-  // Day summary
+  // =============================
+  // 2) Résumé simple par jour (heures planifiées)
+  // =============================
   const byDay = {};
   for (const dk of dayKeys) {
     let plannedCount = 0;
     let plannedMinutes = 0;
+
     for (const r of rows) {
       const p = parseShiftCell(r?.cells?.[dk]);
       if (p.kind === "work") {
@@ -419,6 +469,7 @@ export function analyzePlanning(input = {}, options = {}) {
         plannedMinutes += p.durationMin || 0;
       }
     }
+
     byDay[dk] = {
       plannedCount,
       plannedMinutes,
@@ -426,9 +477,12 @@ export function analyzePlanning(input = {}, options = {}) {
     };
   }
 
-  // Coverage needs by slot / gaps
+  // =============================
+  // 3) Couverture par créneau (needsBySlot + coverageGaps)
+  // =============================
   const needsBySlot = [];
   const coverageGaps = [];
+  const coverageSummary = makeCoverageSummarySkeleton(dayKeys);
 
   for (const dk of dayKeys) {
     for (
@@ -437,15 +491,17 @@ export function analyzePlanning(input = {}, options = {}) {
       slotStart += coverageCfg.slotMinutes
     ) {
       const slotEnd = Math.min(slotStart + coverageCfg.slotMinutes, coverageCfg.toMin);
+
       const req = resolveRequirementForSlot(requirementsByDaySlot, dk, slotStart, slotEnd);
-      const cov = aggregateCoverageForSlot(rows, dk, slotStart);
+      const cov = aggregateCoverageForSlot(rows, dk, slotStart, slotEnd);
 
       const totalGap = Math.max(0, (Number(req.total) || 0) - cov.plannedTotal);
 
       const roleGaps = Object.entries(req.roles || {}).map(([role, needed]) => {
-        const planned = Number(cov.plannedRoles?.[String(role).toLowerCase()] || 0);
+        const key = String(role).toLowerCase();
+        const planned = Number(cov.plannedRoles?.[key] || 0);
         return {
-          role: String(role).toLowerCase(),
+          role: key,
           needed: Number(needed) || 0,
           planned,
           gap: Math.max(0, (Number(needed) || 0) - planned),
@@ -453,19 +509,15 @@ export function analyzePlanning(input = {}, options = {}) {
       });
 
       const skillGaps = Object.entries(req.skills || {}).map(([skill, needed]) => {
-        const planned = Number(cov.plannedSkills?.[String(skill).toLowerCase()] || 0);
+        const key = String(skill).toLowerCase();
+        const planned = Number(cov.plannedSkills?.[key] || 0);
         return {
-          skill: String(skill).toLowerCase(),
+          skill: key,
           needed: Number(needed) || 0,
           planned,
           gap: Math.max(0, (Number(needed) || 0) - planned),
         };
       });
-
-      const hasRoleGap = roleGaps.some((x) => x.gap > 0);
-      const skillGapItems = skillGaps.filter((x) => x.gap > 0);
-      const hasSkillGap = skillGapItems.length > 0;
-      const hasGap = totalGap > 0 || hasRoleGap || hasSkillGap;
 
       const slotRec = {
         dayKey: dk,
@@ -473,15 +525,17 @@ export function analyzePlanning(input = {}, options = {}) {
         slotLabel: `${minToHHMM(slotStart)}-${minToHHMM(slotEnd)}`,
         start: minToHHMM(slotStart),
         end: minToHHMM(slotEnd),
-        // ✅ aliases autoBalance
+
+        // ✅ aliases attendus par AutoBalance
         slotStart: minToHHMM(slotStart),
         slotEnd: minToHHMM(slotEnd),
 
+        slotStartMin: slotStart,
+        slotEndMin: slotEnd,
+
         requiredTotal: Number(req.total) || 0,
-        totalNeed: Number(req.total) || 0, // alias
         plannedTotal: cov.plannedTotal,
         totalGap,
-        gap: totalGap, // alias total gap
 
         requiredRoles: req.roles || {},
         plannedRoles: cov.plannedRoles || {},
@@ -491,53 +545,93 @@ export function analyzePlanning(input = {}, options = {}) {
         plannedSkills: cov.plannedSkills || {},
         skillGaps,
 
-        plannedCodes: cov.codes || {},
+        plannedCodes: cov.plannedCodes || {},
       };
 
       needsBySlot.push(slotRec);
 
-      if (hasGap) {
-        // Gap total (coverage)
-        if (totalGap > 0) {
-          coverageGaps.push({
-            ...slotRec,
-            type: "coverage_total_gap",
-            gap: totalGap,
-            severity: totalGap >= 2 ? "high" : "warning",
-            message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : besoin ${req.total}, planifié ${cov.plannedTotal}`,
-          });
-        }
+      // ---- coverageSummary byDay (attendu par PlanningRH)
+      const sumDay = coverageSummary.byDay[dk];
+      sumDay.totalNeed += slotRec.requiredTotal;
+      sumDay.totalPlanned += slotRec.plannedTotal;
+      sumDay.totalGap += slotRec.totalGap;
+      sumDay.slotsCount += 1;
+      if (slotRec.requiredTotal > 0) sumDay.slotsWithNeedCount += 1;
+      if (slotRec.totalGap > 0) sumDay.slotsWithGapCount += 1;
+      sumDay.roleGapsCount += roleGaps.filter((x) => x.gap > 0).length;
+      sumDay.skillGapsCount += skillGaps.filter((x) => x.gap > 0).length;
 
-        // Gaps compétence (1 item / skill gap)
-        for (const sg of skillGapItems) {
-          coverageGaps.push({
-            ...slotRec,
-            type: "coverage_skill_gap",
-            skill: sg.skill,
-            gap: Number(sg.gap) || 0,
-            severity: (Number(sg.gap) || 0) >= 2 ? "high" : "warning",
-            message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque compétence ${sg.skill} (${sg.planned}/${sg.needed})`,
-          });
-        }
+      // ---- coverageGaps détaillés (types stables)
+      if (totalGap > 0) {
+        coverageGaps.push({
+          type: "coverage_total_gap",
+          severity: totalGap >= 2 ? "high" : "warning",
+          dayKey: dk,
+          slotKey: slotRec.slotKey,
+          slotLabel: slotRec.slotLabel,
+          slotStart: slotRec.slotStart,
+          slotEnd: slotRec.slotEnd,
+          requiredTotal: slotRec.requiredTotal,
+          plannedTotal: slotRec.plannedTotal,
+          totalGap,
+          gap: totalGap,
+          message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : besoin total ${slotRec.requiredTotal}, planifié ${slotRec.plannedTotal} (gap ${totalGap})`,
+        });
+      }
 
-        // fallback if only role gaps
-        if (totalGap === 0 && !hasSkillGap && hasRoleGap) {
-          coverageGaps.push({
-            ...slotRec,
-            type: "coverage_role_gap",
-            gap: roleGaps.reduce((s, r) => s + (Number(r.gap) || 0), 0),
-            severity: roleGaps.some((r) => (Number(r.gap) || 0) >= 2) ? "high" : "warning",
-            message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque rôle(s)`,
-          });
-        }
+      for (const rg of roleGaps.filter((x) => x.gap > 0)) {
+        coverageGaps.push({
+          type: "coverage_role_gap",
+          severity: rg.gap >= 2 ? "high" : "warning",
+          dayKey: dk,
+          slotKey: slotRec.slotKey,
+          slotLabel: slotRec.slotLabel,
+          slotStart: slotRec.slotStart,
+          slotEnd: slotRec.slotEnd,
+          role: rg.role,
+          needed: rg.needed,
+          planned: rg.planned,
+          gap: rg.gap,
+          message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque rôle ${rg.role} (${rg.planned}/${rg.needed})`,
+        });
+      }
+
+      for (const sg of skillGaps.filter((x) => x.gap > 0)) {
+        coverageGaps.push({
+          type: "coverage_skill_gap",
+          severity: sg.gap >= 2 ? "high" : "warning",
+          dayKey: dk,
+          slotKey: slotRec.slotKey,
+          slotLabel: slotRec.slotLabel,
+          slotStart: slotRec.slotStart,
+          slotEnd: slotRec.slotEnd,
+          skill: sg.skill,
+          needed: sg.needed,
+          planned: sg.planned,
+          gap: sg.gap,
+          message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque compétence ${sg.skill} (${sg.planned}/${sg.needed})`,
+        });
       }
     }
   }
 
-  // Add compact warnings from top coverage gaps
-  for (const g of coverageGaps.slice(0, 20)) {
+  // Agrégats coverageSummary.totals
+  for (const dk of dayKeys) {
+    const d = coverageSummary.byDay[dk];
+    coverageSummary.totals.totalNeed += d.totalNeed;
+    coverageSummary.totals.totalPlanned += d.totalPlanned;
+    coverageSummary.totals.totalGap += d.totalGap;
+    coverageSummary.totals.roleGapsCount += d.roleGapsCount;
+    coverageSummary.totals.skillGapsCount += d.skillGapsCount;
+    coverageSummary.totals.slotsCount += d.slotsCount;
+    coverageSummary.totals.slotsWithNeedCount += d.slotsWithNeedCount;
+    coverageSummary.totals.slotsWithGapCount += d.slotsWithGapCount;
+  }
+
+  // Warnings coverage (compact)
+  for (const g of coverageGaps.slice(0, 30)) {
     warnings.push({
-      type: "coverage_gap",
+      type: g.type || "coverage_gap",
       severity: g.severity || "warning",
       dayKey: g.dayKey,
       slotKey: g.slotKey,
@@ -546,9 +640,12 @@ export function analyzePlanning(input = {}, options = {}) {
     });
   }
 
-  // Cost summary
+  // =============================
+  // 4) Coûts
+  // =============================
   const estimatedCost = rowStats.reduce((s, r) => s + (Number(r.estimatedCost) || 0), 0);
   const estimatedCostByRole = {};
+
   for (const r of rowStats) {
     const role = String(r.role || "prep").toLowerCase();
     estimatedCostByRole[role] = (estimatedCostByRole[role] || 0) + (Number(r.estimatedCost) || 0);
@@ -557,47 +654,50 @@ export function analyzePlanning(input = {}, options = {}) {
   const totalPlannedMinutes = rowStats.reduce((s, r) => s + (Number(r.weeklyMinutes) || 0), 0);
   const totalTargetMinutes = rowStats.reduce((s, r) => s + (Number(r.targetMin) || 0), 0);
 
-  const coverageSummary = buildCoverageSummary(dayKeys, needsBySlot, coverageGaps);
   const skillCoverageGapsCount = coverageGaps.filter((g) => g.type === "coverage_skill_gap").length;
+  const roleCoverageGapsCount = coverageGaps.filter((g) => g.type === "coverage_role_gap").length;
+  const totalCoverageGapsCount = coverageGaps.length;
 
   return {
     summary: {
       staffCount: rows.length,
       warningsCount: warnings.length,
+
       totalPlannedMinutes,
       totalTargetMinutes,
       totalDeltaMinutes: totalPlannedMinutes - totalTargetMinutes,
 
-      // ✅ aliases coût
       estimatedCost,
-      estimatedPayrollCost: estimatedCost,
+      estimatedPayrollCost: estimatedCost, // ✅ compat PlanningRH / AutoBalance
       estimatedCostByRole,
 
-      // ✅ aliases gaps
-      coverageGapCount: coverageGaps.length,
-      coverageGapsCount: coverageGaps.length,
+      coverageGapCount: totalCoverageGapsCount, // ✅ singulier
+      coverageGapsCount: totalCoverageGapsCount, // ✅ pluriel compat
       skillCoverageGapsCount,
+      roleCoverageGapsCount,
+
       slotsAnalyzed: needsBySlot.length,
+      coverageSlotsAnalyzed: needsBySlot.length,
     },
 
     rowStats,
     byDay,
     warnings,
 
-    // ✅ payloads détaillés
     needsBySlot,
     coverageGaps,
     coverageSummary,
 
-    // ✅ compat UI
     costs: {
       totalEstimated: estimatedCost,
       byRole: estimatedCostByRole,
       currency: "EUR",
     },
 
-    // alias placeholder (certaines UIs anciennes le lisent)
-    rulesResults: [],
+    meta: {
+      coverageConfig: coverageCfg,
+      requirementsDetected: !!requirementsByDaySlot && Object.keys(requirementsByDaySlot || {}).length > 0,
+    },
   };
 }
 
