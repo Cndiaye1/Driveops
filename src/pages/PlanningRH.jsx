@@ -1,4 +1,3 @@
-// src/pages/PlanningRH.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "../services/supabaseClient";
 import { useDriveStore } from "../store/useDriveStore";
@@ -9,12 +8,14 @@ import * as PlanningAnalyzer from "../utils/planningAnalyzer";
 import * as PlanningAutoBalance from "../utils/planningAutoBalance";
 
 /* =========================================================
-   PlanningRH v2.6 PRO (DriveOps) — Sprint 3 stable
+   PlanningRH v2.8 PRO (DriveOps) — Sprint 3 + doc.config JSON editor
    - Semaine RH (stockage = lundi)
    - Affichage grille = Dimanche -> Samedi (terrain)
    - Supabase-ready + fallback localStorage
    - Analyse RH (règles / écarts / besoins / couverture / coût)
    - Auto-balance (contrat + contraintes + couverture)
+   - doc.config intégré (MELUN par défaut)
+   - ✅ Éditeur JSON doc.config intégré (format / merge / replace)
    - Print A4 paysage v2+ (créneau + badge code séparés)
    ========================================================= */
 
@@ -37,6 +38,290 @@ const DAY_KEYS_UI_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]; // 
 
 const LS_PREFIX = "driveops_rh_planning_v1";
 
+/* =========================================================
+   doc.config — Modèle complet MELUN (par défaut)
+   ========================================================= */
+
+function cloneJson(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function isPlainObject(v) {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function deepMerge(base, override) {
+  if (!isPlainObject(base)) return cloneJson(override);
+  const out = cloneJson(base);
+
+  if (!isPlainObject(override)) return out;
+
+  for (const key of Object.keys(override)) {
+    const b = out[key];
+    const o = override[key];
+
+    if (Array.isArray(o)) {
+      out[key] = cloneJson(o);
+    } else if (isPlainObject(o) && isPlainObject(b)) {
+      out[key] = deepMerge(b, o);
+    } else if (isPlainObject(o)) {
+      out[key] = deepMerge({}, o);
+    } else {
+      out[key] = o;
+    }
+  }
+
+  return out;
+}
+
+// Besoins couverture (agrégé) : nombre de personnes nécessaires par créneau
+// NB: Base "terrain" MELUN raisonnable. À ajuster selon ton volume réel.
+const DEFAULT_DOC_CONFIG_MELUN = {
+  rhRules: {
+    maxAmplitudeMinutes: 10 * 60,
+    maxDailyWorkMinutes: 10 * 60,
+    minRestBetweenDaysMinutes: 11 * 60,
+    maxConsecutiveDays: 6,
+    weeklyOverContractToleranceMinutes: 60,
+    weeklyUnderContractToleranceMinutes: 60,
+    strictAvailability: true,
+  },
+
+  // Besoins totaux par créneau (toutes compétences confondues)
+  needsBySlot: {
+    mon: {
+      "06:00-08:00": 2,
+      "08:00-10:00": 4,
+      "10:00-12:00": 5,
+      "12:00-14:00": 5,
+      "14:00-16:00": 4,
+      "16:00-18:00": 4,
+      "18:00-20:00": 3,
+      "20:00-21:30": 2,
+    },
+    tue: {
+      "06:00-08:00": 2,
+      "08:00-10:00": 4,
+      "10:00-12:00": 5,
+      "12:00-14:00": 5,
+      "14:00-16:00": 4,
+      "16:00-18:00": 4,
+      "18:00-20:00": 3,
+      "20:00-21:30": 2,
+    },
+    wed: {
+      "06:00-08:00": 2,
+      "08:00-10:00": 5,
+      "10:00-12:00": 6,
+      "12:00-14:00": 6,
+      "14:00-16:00": 5,
+      "16:00-18:00": 4,
+      "18:00-20:00": 4,
+      "20:00-21:30": 2,
+    },
+    thu: {
+      "06:00-08:00": 2,
+      "08:00-10:00": 4,
+      "10:00-12:00": 5,
+      "12:00-14:00": 5,
+      "14:00-16:00": 4,
+      "16:00-18:00": 4,
+      "18:00-20:00": 3,
+      "20:00-21:30": 2,
+    },
+    fri: {
+      "06:00-08:00": 3,
+      "08:00-10:00": 5,
+      "10:00-12:00": 7,
+      "12:00-14:00": 7,
+      "14:00-16:00": 6,
+      "16:00-18:00": 5,
+      "18:00-20:00": 5,
+      "20:00-21:30": 3,
+    },
+    sat: {
+      "06:00-08:00": 3,
+      "08:00-10:00": 6,
+      "10:00-12:00": 8,
+      "12:00-14:00": 8,
+      "14:00-16:00": 7,
+      "16:00-18:00": 6,
+      "18:00-20:00": 5,
+      "20:00-21:30": 3,
+    },
+    sun: {
+      "06:00-08:00": 1,
+      "08:00-10:00": 3,
+      "10:00-12:00": 4,
+      "12:00-14:00": 4,
+      "14:00-16:00": 4,
+      "16:00-18:00": 3,
+      "18:00-20:00": 2,
+      "20:00-21:30": 1,
+    },
+  },
+
+  // Besoins compétences par créneau (optionnel mais très utile)
+  skillCoverageBySlot: {
+    mon: {
+      "08:00-10:00": { drive: 1, frais: 1 },
+      "10:00-12:00": { drive: 1, frais: 1, ambiant: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1 },
+      "14:00-16:00": { drive: 1, frais: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1 },
+    },
+    tue: {
+      "08:00-10:00": { drive: 1, frais: 1 },
+      "10:00-12:00": { drive: 1, frais: 1, ambiant: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1 },
+      "14:00-16:00": { drive: 1, frais: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1 },
+    },
+    wed: {
+      "08:00-10:00": { drive: 1, frais: 1 },
+      "10:00-12:00": { drive: 1, frais: 1, ambiant: 1, surgeles: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1, surgeles: 1 },
+      "14:00-16:00": { drive: 1, frais: 1, ambiant: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1 },
+      "18:00-20:00": { drive: 1, accueil: 1 },
+    },
+    thu: {
+      "08:00-10:00": { drive: 1, frais: 1 },
+      "10:00-12:00": { drive: 1, frais: 1, ambiant: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1 },
+      "14:00-16:00": { drive: 1, frais: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1 },
+    },
+    fri: {
+      "08:00-10:00": { drive: 1, frais: 1, ambiant: 1 },
+      "10:00-12:00": { drive: 1, frais: 1, ambiant: 1, surgeles: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1, surgeles: 1 },
+      "14:00-16:00": { drive: 1, frais: 1, ambiant: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1, ambiant: 1 },
+      "18:00-20:00": { drive: 1, accueil: 1 },
+    },
+    sat: {
+      "08:00-10:00": { drive: 1, frais: 1, ambiant: 1 },
+      "10:00-12:00": { drive: 1, frais: 1, ambiant: 1, surgeles: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1, surgeles: 1 },
+      "14:00-16:00": { drive: 1, frais: 1, ambiant: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1, ambiant: 1 },
+      "18:00-20:00": { drive: 1, accueil: 1 },
+    },
+    sun: {
+      "10:00-12:00": { drive: 1, frais: 1 },
+      "12:00-14:00": { drive: 1, frais: 1, ambiant: 1 },
+      "14:00-16:00": { drive: 1, accueil: 1 },
+      "16:00-18:00": { drive: 1, accueil: 1 },
+    },
+  },
+
+  // Paramètres coût estimatif
+  costing: {
+    currency: "EUR",
+    defaultHourlyRate: 12.2,
+    hourlyRatesByRole: {
+      prep: 12.2,
+      coordo: 14.8,
+      manager: 17.5,
+    },
+    sundayMultiplier: 1,
+    nightMultiplier: 1,
+    chargesRate: 0,
+  },
+
+  // Paramétrage auto-balance
+  autoBalance: {
+    toleranceMinutes: 30,
+    maxPatches: 80,
+    keepAbsenceCodes: true,
+    preserveManualCodes: true,
+    allowSetRestOnOverplan: true,
+    rebalanceCoverage: true,
+
+    shiftTemplates: [
+      { label: "Long matin", value: "06:00-13:30", roles: ["prep", "coordo"] },
+      { label: "Journée", value: "09:00-17:00", roles: ["prep", "coordo"] },
+      { label: "Fermeture", value: "13:30-21:00", roles: ["prep", "coordo"] },
+      { label: "Court matin", value: "06:00-10:00", roles: ["prep", "coordo"] },
+      { label: "Midi", value: "11:00-15:00", roles: ["prep", "coordo"] },
+      { label: "Après-midi", value: "14:00-18:00", roles: ["prep", "coordo"] },
+      { label: "Soir", value: "17:00-21:30", roles: ["prep", "coordo"] },
+
+      { label: "Coordo ouverture", value: "06:00-14:00", roles: ["coordo"] },
+      { label: "Coordo journée", value: "08:00-16:00", roles: ["coordo"] },
+      { label: "Coordo fermeture", value: "12:30-20:30", roles: ["coordo"] },
+    ],
+  },
+};
+
+const DEFAULT_DOC_CONFIG_GENERIC = {
+  rhRules: {
+    maxAmplitudeMinutes: 10 * 60,
+    maxDailyWorkMinutes: 10 * 60,
+    minRestBetweenDaysMinutes: 11 * 60,
+    maxConsecutiveDays: 6,
+    weeklyOverContractToleranceMinutes: 60,
+    weeklyUnderContractToleranceMinutes: 60,
+    strictAvailability: true,
+  },
+  needsBySlot: {},
+  skillCoverageBySlot: {},
+  costing: {
+    currency: "EUR",
+    defaultHourlyRate: 12,
+    hourlyRatesByRole: { prep: 12, coordo: 14.5 },
+  },
+  autoBalance: {
+    toleranceMinutes: 30,
+    maxPatches: 60,
+    keepAbsenceCodes: true,
+    preserveManualCodes: true,
+    allowSetRestOnOverplan: true,
+    rebalanceCoverage: true,
+    shiftTemplates: [
+      { label: "Long matin", value: "06:00-13:30", roles: ["prep", "coordo"] },
+      { label: "Journée", value: "09:00-17:00", roles: ["prep", "coordo"] },
+      { label: "Fermeture", value: "13:30-21:00", roles: ["prep", "coordo"] },
+      { label: "Court matin", value: "06:00-10:00", roles: ["prep", "coordo"] },
+      { label: "Midi", value: "11:00-15:00", roles: ["prep", "coordo"] },
+      { label: "Soir", value: "17:00-21:30", roles: ["prep", "coordo"] },
+    ],
+  },
+};
+
+function getDefaultDocConfigForSite(siteCode) {
+  const site = String(siteCode || "").trim().toLowerCase();
+  if (site === "melun") return cloneJson(DEFAULT_DOC_CONFIG_MELUN);
+  return cloneJson(DEFAULT_DOC_CONFIG_GENERIC);
+}
+
+function mergeDocConfigWithDefaults(siteCode, existingConfig) {
+  const base = getDefaultDocConfigForSite(siteCode);
+  if (!existingConfig || typeof existingConfig !== "object") return base;
+  return deepMerge(base, existingConfig);
+}
+
+function stringifyConfigPretty(config) {
+  try {
+    return JSON.stringify(config ?? {}, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+function parseConfigJsonText(text) {
+  const parsed = JSON.parse(String(text || "{}"));
+  if (!isPlainObject(parsed)) {
+    throw new Error("Le JSON doit être un objet (ex: { ... })");
+  }
+  return parsed;
+}
+
 // ---------- utils date / semaine
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -52,22 +337,18 @@ function fromISODate(iso) {
   return new Date(y, m - 1, dd);
 }
 
-// lundi de la semaine
 function getWeekStartMonday(date = new Date()) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
-  const jsDay = d.getDay(); // 0 dim ... 6 sam
+  const jsDay = d.getDay();
   const diff = jsDay === 0 ? -6 : 1 - jsDay;
   d.setDate(d.getDate() + diff);
   return d;
 }
 
-// dates d'affichage dimanche->samedi à partir d'un lundi
 function getDisplayWeekDatesFromMonday(weekStartMondayISO) {
   const mon = fromISODate(weekStartMondayISO);
   const out = [];
-
-  // dimanche = lundi -1
   const sun = new Date(mon);
   sun.setDate(mon.getDate() - 1);
 
@@ -123,10 +404,8 @@ function hhmmToMin(hhmm) {
 }
 
 function safeParseCellDetailed(cell) {
-  // ✅ compatible avec planningRules.js partagé
   const candidates = [
     PlanningRules.parseShiftCellDetailed,
-    // aliases robustes si jamais tu les réintroduis plus tard
     PlanningRules.parseCell,
     PlanningRules.getCellDetails,
     PlanningRules.defaultParseShiftCellDetailed,
@@ -143,7 +422,6 @@ function safeParseCellDetailed(cell) {
     }
   }
 
-  // fallback local
   const raw = String(cell || "").trim();
   const normalized = raw.toUpperCase().replaceAll("H", ":").replace(/\s+/g, "");
   if (!normalized) {
@@ -333,29 +611,25 @@ function makeRow(name, contractHours = 35) {
     id: safeId,
     name: normalizeName(name),
     contractHours: parseContractHours(contractHours),
-    role: "prep", // prep | coordo | autre
+    role: "prep",
     cells: makeEmptyCells(),
     notes: "",
-    skills: [], // Sprint 3 PRO: ex ["drive","frais","caisse"]
-    availability: {}, // Sprint 3 PRO: ex { mon: false, tue: ["06:00-14:00"] }
-    hourlyRate: undefined, // optionnel (sinon analyzer fallback rôle/default)
+    skills: [],
+    availability: {},
+    hourlyRate: undefined,
   };
 }
 
 function makePlanningDoc({ siteCode, weekStartMonday, rows = [] }) {
+  const normalizedSite = String(siteCode || "").trim().toLowerCase();
+
   return {
-    siteCode,
+    siteCode: normalizedSite,
     weekStartMonday,
     rows,
     updatedAt: new Date().toISOString(),
     version: 2,
-    // config optionnelle (Sprint 3 PRO)
-    // config: {
-    //   rhRules: {...},
-    //   needsBySlot: { mon: { "06:00-08:00": 2 } },
-    //   skillCoverageBySlot: { mon: { "08:00-10:00": { drive:1 } } },
-    //   costing: { defaultHourlyRate:12, hourlyRatesByRole:{ prep:12, coordo:14.5 } }
-    // }
+    config: getDefaultDocConfigForSite(normalizedSite),
   };
 }
 
@@ -364,9 +638,8 @@ function localKey(siteCode, weekStartMonday) {
   return `${LS_PREFIX}__${String(siteCode || "").toLowerCase()}__${weekStartMonday}`;
 }
 
-// ---------- Supabase (fallback local si table absente)
+// ---------- Supabase
 async function loadPlanningRemote(siteCode, weekStartMonday) {
-  // Table recommandée: drive_rh_plannings(site_code text, week_start date, data_json jsonb, updated_at timestamptz)
   const { data, error } = await supabase
     .from("drive_rh_plannings")
     .select("site_code, week_start, data_json, updated_at")
@@ -393,7 +666,7 @@ async function savePlanningRemote(siteCode, weekStartMonday, dataJson) {
   if (error) throw error;
 }
 
-// ---------- adapters utilitaires Sprint 3 (robustes)
+// ---------- adapters Sprint 3
 function safeCall(fn, ...args) {
   try {
     if (typeof fn === "function") return fn(...args);
@@ -417,12 +690,11 @@ function buildAnalyzerInput({ doc, rowsWithStats, normalizedSite, weekStartMonda
       weeklyMinutes: computeRowWeeklyMinutes(r.cells || {}),
       weeklyHours: Math.round((computeRowWeeklyMinutes(r.cells || {}) / 60) * 100) / 100,
     })),
-    rowsWithStats, // version enrichie (all rows)
+    rowsWithStats,
   };
 }
 
 function runPlanningAnalysis(input) {
-  // signatures fixes + alias rétrocompatibles
   const candidates = [
     PlanningAnalyzer.analyzePlanning,
     PlanningAnalyzer.analyzeWeekPlanning,
@@ -436,7 +708,6 @@ function runPlanningAnalysis(input) {
     if (res) return res;
   }
 
-  // fallback local minimal
   const rows = input?.rows || [];
   const warnings = [];
   const byDay = {};
@@ -471,12 +742,6 @@ function runPlanningAnalysis(input) {
       warningsCount: warnings.length,
       coverageGapsCount: 0,
       estimatedPayrollCost: 0,
-      totalPlannedMinutes: rows.reduce((sum, r) => sum + computeRowWeeklyMinutes(r.cells || {}), 0),
-      totalTargetMinutes: rows.reduce((sum, r) => sum + (Number(r.contractHours) || 0) * 60, 0),
-      totalDeltaMinutes: rows.reduce(
-        (sum, r) => sum + (computeRowWeeklyMinutes(r.cells || {}) - (Number(r.contractHours) || 0) * 60),
-        0
-      ),
     },
     byDay,
     warnings,
@@ -515,8 +780,7 @@ function runAutoBalance(input) {
   ];
 
   for (const c of candidates) {
-    // ✅ certains utils acceptent (input, options), d'autres seulement (input)
-    const res = safeCall(c, input, input?.options || {});
+    const res = safeCall(c, input);
     if (res) return res;
   }
 
@@ -526,14 +790,9 @@ function runAutoBalance(input) {
 function applyAutoBalanceResultToRows(currentRows, result) {
   if (!result) return null;
 
-  // Formats supportés :
-  // 1) { rows: [...] }
   if (Array.isArray(result.rows)) return result.rows;
-
-  // 2) { updatedRows: [...] }
   if (Array.isArray(result.updatedRows)) return result.updatedRows;
 
-  // 3) { patches: [{rowId, dayKey, value}, ...] }
   if (Array.isArray(result.patches)) {
     const rows = (currentRows || []).map((r) => ({ ...r, cells: { ...(r.cells || {}) } }));
     const byId = new Map(rows.map((r) => [r.id, r]));
@@ -575,7 +834,7 @@ export default function PlanningRH({ adminState }) {
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState("idle"); // idle|saved|error|offline
+  const [saveStatus, setSaveStatus] = useState("idle");
   const [saveError, setSaveError] = useState("");
 
   const [search, setSearch] = useState("");
@@ -588,6 +847,13 @@ export default function PlanningRH({ adminState }) {
   const [autoBalanceRunning, setAutoBalanceRunning] = useState(false);
   const [autoBalanceMessage, setAutoBalanceMessage] = useState("");
 
+  // ✅ JSON editor doc.config
+  const [showConfigEditor, setShowConfigEditor] = useState(false);
+  const [configEditorText, setConfigEditorText] = useState("{}");
+  const [configEditorError, setConfigEditorError] = useState("");
+  const [configEditorDirty, setConfigEditorDirty] = useState(false);
+  const [configEditorInfo, setConfigEditorInfo] = useState("");
+
   const normalizedSite = useMemo(
     () => String(siteCode || "").trim().toLowerCase(),
     [siteCode]
@@ -598,7 +864,6 @@ export default function PlanningRH({ adminState }) {
     [weekStartMonday]
   );
 
-  // map clé jour -> label date (ordre UI)
   const displayDayMeta = useMemo(() => {
     return DAY_KEYS_UI_ORDER.map((k, idx) => ({
       key: k,
@@ -608,7 +873,7 @@ export default function PlanningRH({ adminState }) {
     }));
   }, [displayWeekDates]);
 
-  // ---------- load (Supabase -> fallback local)
+  // ---------- load
   const loadWeek = useCallback(async () => {
     if (!normalizedSite || !weekStartMonday) return;
 
@@ -633,11 +898,10 @@ export default function PlanningRH({ adminState }) {
           };
         }
       } catch (e) {
-        // fallback local si table n'existe pas encore / RLS pas prêt
         console.warn("[PlanningRH] remote load fallback local:", e?.message || e);
       }
 
-      if (!loaded && typeof localStorage !== "undefined") {
+      if (!loaded) {
         const raw = localStorage.getItem(localKey(normalizedSite, weekStartMonday));
         if (raw) {
           try {
@@ -662,7 +926,6 @@ export default function PlanningRH({ adminState }) {
         });
       }
 
-      // sécurité schema
       loaded.rows = Array.isArray(loaded.rows)
         ? loaded.rows.map((r) => ({
             id:
@@ -684,22 +947,35 @@ export default function PlanningRH({ adminState }) {
           }))
         : [];
 
-      // config optionnelle
-      loaded.config = loaded.config && typeof loaded.config === "object" ? loaded.config : {};
+      loaded.config = mergeDocConfigWithDefaults(normalizedSite, loaded.config || {});
 
       setDoc(loaded);
       setSaveStatus("idle");
       setAnalysisRefreshTick((x) => x + 1);
+
+      // sync editor text après load (si pas en cours d'édition)
+      setConfigEditorError("");
+      setConfigEditorInfo("");
+      if (!configEditorDirty) {
+        setConfigEditorText(stringifyConfigPretty(loaded.config || {}));
+      }
     } finally {
       setLoading(false);
     }
-  }, [normalizedSite, weekStartMonday]);
+  }, [normalizedSite, weekStartMonday, configEditorDirty]);
 
   useEffect(() => {
     loadWeek();
   }, [loadWeek]);
 
-  // ---------- auto-ajout collaborateurs depuis DriveOps (1 fois après load)
+  // sync éditeur quand doc.config change et qu'on n'est pas en modif manuelle
+  useEffect(() => {
+    if (!showConfigEditor) return;
+    if (configEditorDirty) return;
+    setConfigEditorText(stringifyConfigPretty(doc?.config || {}));
+  }, [showConfigEditor, configEditorDirty, doc?.config]);
+
+  // ---------- auto-ajout collaborateurs depuis DriveOps
   useEffect(() => {
     if (loading) return;
     if (autoAddFromDriveOpsDone) return;
@@ -737,20 +1013,16 @@ export default function PlanningRH({ adminState }) {
     setAutoAddFromDriveOpsDone(true);
   }, [loading, autoAddFromDriveOpsDone, doc?.rows, preparateursList, coordosList]);
 
-  // reset auto-merge flag when week/site changes
   useEffect(() => {
     setAutoAddFromDriveOpsDone(false);
   }, [weekStartMonday, normalizedSite]);
 
-  // ---------- autosave (local immédiat + remote debounce)
+  // ---------- autosave
   useEffect(() => {
     if (!doc || !normalizedSite || !weekStartMonday) return;
 
-    // local backup
     try {
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
-      }
+      localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
     } catch {}
 
     const t = setTimeout(async () => {
@@ -848,9 +1120,7 @@ export default function PlanningRH({ adminState }) {
               : String(Date.now() + Math.random()),
         })),
       };
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(localKey(normalizedSite, nextMonday), JSON.stringify(cloned));
-      }
+      localStorage.setItem(localKey(normalizedSite, nextMonday), JSON.stringify(cloned));
       alert("Semaine copiée localement vers la semaine suivante ✅");
     } catch {
       alert("Copie locale impossible.");
@@ -880,6 +1150,142 @@ export default function PlanningRH({ adminState }) {
     [selectedRowId, selectedDayKey, setCell]
   );
 
+  // ---------- doc.config actions
+  const resetDocConfigToSiteDefault = useCallback(() => {
+    const ok = window.confirm(
+      `Réinitialiser doc.config avec le modèle par défaut du site "${normalizedSite || "—"}" ?`
+    );
+    if (!ok) return;
+
+    const nextConfig = getDefaultDocConfigForSite(normalizedSite);
+
+    setDoc((prev) => ({
+      ...prev,
+      updatedAt: new Date().toISOString(),
+      config: nextConfig,
+    }));
+    setAnalysisRefreshTick((x) => x + 1);
+
+    setConfigEditorText(stringifyConfigPretty(nextConfig));
+    setConfigEditorDirty(false);
+    setConfigEditorError("");
+    setConfigEditorInfo("doc.config réinitialisé ✅ (modèle site)");
+    setAutoBalanceMessage("doc.config réinitialisé ✅ (modèle site)");
+  }, [normalizedSite]);
+
+  const mergeDocConfigMissingKeys = useCallback(() => {
+    setDoc((prev) => {
+      const nextConfig = mergeDocConfigWithDefaults(normalizedSite, prev?.config || {});
+      setConfigEditorText(stringifyConfigPretty(nextConfig));
+      return {
+        ...prev,
+        updatedAt: new Date().toISOString(),
+        config: nextConfig,
+      };
+    });
+    setConfigEditorDirty(false);
+    setConfigEditorError("");
+    setConfigEditorInfo("doc.config complété ✅ (clés manquantes ajoutées)");
+    setAnalysisRefreshTick((x) => x + 1);
+    setAutoBalanceMessage("doc.config complété ✅ (clés manquantes ajoutées)");
+  }, [normalizedSite]);
+
+  const openConfigEditor = useCallback(() => {
+    setShowConfigEditor((v) => {
+      const next = !v;
+      if (!v) {
+        setConfigEditorText(stringifyConfigPretty(doc?.config || {}));
+        setConfigEditorDirty(false);
+        setConfigEditorError("");
+        setConfigEditorInfo("");
+      }
+      return next;
+    });
+  }, [doc?.config]);
+
+  const handleConfigEditorFormat = useCallback(() => {
+    try {
+      const parsed = parseConfigJsonText(configEditorText);
+      setConfigEditorText(stringifyConfigPretty(parsed));
+      setConfigEditorError("");
+      setConfigEditorInfo("JSON formaté ✅");
+      setConfigEditorDirty(true);
+    } catch (e) {
+      setConfigEditorError(`JSON invalide : ${e?.message || e}`);
+      setConfigEditorInfo("");
+    }
+  }, [configEditorText]);
+
+  const handleConfigEditorResetText = useCallback(() => {
+    setConfigEditorText(stringifyConfigPretty(doc?.config || {}));
+    setConfigEditorDirty(false);
+    setConfigEditorError("");
+    setConfigEditorInfo("Contenu rechargé depuis le doc courant ✅");
+  }, [doc?.config]);
+
+  const handleConfigEditorCopy = useCallback(async () => {
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error("Clipboard non disponible dans ce navigateur");
+      }
+      await navigator.clipboard.writeText(configEditorText);
+      setConfigEditorError("");
+      setConfigEditorInfo("JSON copié dans le presse-papiers ✅");
+    } catch (e) {
+      setConfigEditorError(`Copie impossible : ${e?.message || e}`);
+      setConfigEditorInfo("");
+    }
+  }, [configEditorText]);
+
+  const handleConfigEditorApplyReplace = useCallback(() => {
+    try {
+      const parsed = parseConfigJsonText(configEditorText);
+      const normalized = mergeDocConfigWithDefaults(normalizedSite, parsed);
+
+      setDoc((prev) => ({
+        ...prev,
+        updatedAt: new Date().toISOString(),
+        config: normalized,
+      }));
+      setAnalysisRefreshTick((x) => x + 1);
+
+      setConfigEditorText(stringifyConfigPretty(normalized));
+      setConfigEditorDirty(false);
+      setConfigEditorError("");
+      setConfigEditorInfo("doc.config appliqué ✅ (replace + merge defaults)");
+    } catch (e) {
+      setConfigEditorError(`Application impossible : ${e?.message || e}`);
+      setConfigEditorInfo("");
+    }
+  }, [configEditorText, normalizedSite]);
+
+  const handleConfigEditorApplyMergeCurrent = useCallback(() => {
+    try {
+      const parsed = parseConfigJsonText(configEditorText);
+
+      setDoc((prev) => {
+        const mergedOnCurrent = deepMerge(prev?.config || {}, parsed);
+        const normalized = mergeDocConfigWithDefaults(normalizedSite, mergedOnCurrent);
+
+        setConfigEditorText(stringifyConfigPretty(normalized));
+
+        return {
+          ...prev,
+          updatedAt: new Date().toISOString(),
+          config: normalized,
+        };
+      });
+
+      setAnalysisRefreshTick((x) => x + 1);
+      setConfigEditorDirty(false);
+      setConfigEditorError("");
+      setConfigEditorInfo("doc.config appliqué ✅ (merge sur config actuel)");
+    } catch (e) {
+      setConfigEditorError(`Merge impossible : ${e?.message || e}`);
+      setConfigEditorInfo("");
+    }
+  }, [configEditorText, normalizedSite]);
+
   // ---------- vues calculées
   const filteredRows = useMemo(() => {
     const q = normalizeName(search);
@@ -903,7 +1309,6 @@ export default function PlanningRH({ adminState }) {
     });
   }, [filteredRows]);
 
-  // Analyse RH = sur TOUT le planning (pas seulement les lignes filtrées UI)
   const allRowsWithStats = useMemo(() => {
     return (doc.rows || []).map((r) => {
       const weeklyMin = computeRowWeeklyMinutes(r.cells);
@@ -924,7 +1329,7 @@ export default function PlanningRH({ adminState }) {
     };
   }, [rowsWithStats]);
 
-  // ---------- Sprint 3 analyse branchée utilitaires
+  // ---------- analyse
   const analysisInput = useMemo(
     () =>
       buildAnalyzerInput({
@@ -940,16 +1345,12 @@ export default function PlanningRH({ adminState }) {
     const analysis = runPlanningAnalysis(analysisInput);
     const rules = runPlanningRules(analysisInput);
 
-    return {
-      analysis,
-      rules,
-    };
+    return { analysis, rules };
   }, [analysisInput]);
 
   const compactAlerts = useMemo(() => {
     const arr = [];
 
-    // warnings analyzer
     const aw = analysisResult?.analysis?.warnings || [];
     for (const w of aw.slice(0, 8)) {
       arr.push({
@@ -958,7 +1359,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // rules violations
     const rv = analysisResult?.rules?.violations || [];
     for (const v of rv.slice(0, 8)) {
       arr.push({
@@ -967,7 +1367,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // coverage gaps (top)
     const cg = (analysisResult?.analysis?.coverageGaps || []).slice(0, 6);
     for (const g of cg) {
       arr.push({
@@ -976,7 +1375,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // fallback simple if no util output
     if (arr.length === 0) {
       const majorDiff = (allRowsWithStats || [])
         .filter((r) => Math.abs(r.diffMin) >= 120)
@@ -1017,18 +1415,25 @@ export default function PlanningRH({ adminState }) {
     setAutoBalanceMessage("");
 
     try {
+      const cfgAuto = doc?.config?.autoBalance || {};
+
       const input = {
         ...analysisInput,
-        rows: doc.rows || [],
         options: {
           mode: "contract-balance",
-          toleranceMinutes: 30,
-          keepAbsenceCodes: true,
-          preserveManualCodes: true,
+          toleranceMinutes: Number(cfgAuto.toleranceMinutes ?? 30),
+          maxPatches: Number(cfgAuto.maxPatches ?? 60),
+          keepAbsenceCodes: cfgAuto.keepAbsenceCodes !== false,
+          preserveManualCodes: cfgAuto.preserveManualCodes !== false,
+          allowSetRestOnOverplan: cfgAuto.allowSetRestOnOverplan !== false,
+          rebalanceCoverage: cfgAuto.rebalanceCoverage !== false,
         },
       };
 
-      const result = runAutoBalance(input);
+      const result = runAutoBalance({
+        ...input,
+        rows: doc.rows || [],
+      });
 
       if (!result) {
         setAutoBalanceMessage("Auto-balance indisponible (utilitaire non exposé ou pas encore finalisé).");
@@ -1068,16 +1473,14 @@ export default function PlanningRH({ adminState }) {
     } finally {
       setAutoBalanceRunning(false);
     }
-  }, [autoBalanceRunning, analysisInput, doc.rows]);
+  }, [autoBalanceRunning, analysisInput, doc.rows, doc?.config?.autoBalance]);
 
-  // ---------- impression A4 paysage (v2+)
   const handlePrint = useCallback(() => {
     try {
       window.print();
     } catch {}
   }, []);
 
-  // ---------- style inline minimal (cohérent Cockpit)
   const ui = {
     page: {
       maxWidth: 1460,
@@ -1128,6 +1531,16 @@ export default function PlanningRH({ adminState }) {
       fontWeight: 700,
       whiteSpace: "nowrap",
     },
+    btnSuccess: {
+      background: "linear-gradient(180deg, #10b981, #059669)",
+      color: "#fff",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: 10,
+      padding: "8px 10px",
+      cursor: "pointer",
+      fontWeight: 700,
+      whiteSpace: "nowrap",
+    },
     input: {
       width: "100%",
       background: "#0f172a",
@@ -1137,6 +1550,23 @@ export default function PlanningRH({ adminState }) {
       padding: "8px 10px",
       outline: "none",
       boxSizing: "border-box",
+    },
+    textarea: {
+      width: "100%",
+      minHeight: 280,
+      resize: "vertical",
+      background: "#0b1220",
+      color: "#e5e7eb",
+      border: "1px solid rgba(255,255,255,0.14)",
+      borderRadius: 12,
+      padding: "10px 12px",
+      outline: "none",
+      boxSizing: "border-box",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: 12,
+      lineHeight: 1.45,
+      whiteSpace: "pre",
+      tabSize: 2,
     },
     th: {
       position: "sticky",
@@ -1254,6 +1684,31 @@ export default function PlanningRH({ adminState }) {
               >
                 {showAnalysisPanel ? "📉 Masquer analyse" : "📊 Afficher analyse"}
               </button>
+
+              <button
+                style={ui.btn}
+                onClick={openConfigEditor}
+                title="Ouvrir / fermer l'éditeur JSON doc.config"
+              >
+                {showConfigEditor ? "📝 Fermer éditeur JSON" : "📝 Éditeur JSON doc.config"}
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button
+                style={ui.btn}
+                onClick={mergeDocConfigMissingKeys}
+                title="Ajoute les clés manquantes du doc.config sans écraser tes valeurs"
+              >
+                🧩 Compléter doc.config
+              </button>
+              <button
+                style={ui.btn}
+                onClick={resetDocConfigToSiteDefault}
+                title="Réinitialise le doc.config avec le modèle par défaut du site"
+              >
+                ♻️ Reset doc.config
+              </button>
             </div>
 
             <div
@@ -1306,6 +1761,123 @@ export default function PlanningRH({ adminState }) {
           </div>
         ) : null}
       </div>
+            {/* ✅ Éditeur JSON doc.config intégré */}
+      {showConfigEditor && (
+        <div style={ui.card} className="planning-print-hide">
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+              marginBottom: 8,
+            }}
+          >
+            <div>
+              <h2 style={{ margin: 0, fontSize: 16 }}>📝 Éditeur JSON — doc.config</h2>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                Modifie les règles RH, besoins, skills, coûts et auto-balance (site: <b>{normalizedSite || "—"}</b>)
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={ui.btn} onClick={handleConfigEditorResetText}>
+                ↩️ Recharger depuis doc
+              </button>
+              <button style={ui.btn} onClick={handleConfigEditorFormat}>
+                🧹 Formatter JSON
+              </button>
+              <button style={ui.btn} onClick={handleConfigEditorCopy}>
+                📋 Copier
+              </button>
+              <button
+                style={ui.btnWarn}
+                onClick={handleConfigEditorApplyMergeCurrent}
+                title="Merge le JSON saisi avec le doc.config actuel puis complète les clés manquantes"
+              >
+                🧩 Appliquer (merge)
+              </button>
+              <button
+                style={ui.btnSuccess}
+                onClick={handleConfigEditorApplyReplace}
+                title="Remplace doc.config par le JSON saisi puis complète les clés manquantes"
+              >
+                ✅ Appliquer (replace)
+              </button>
+            </div>
+          </div>
+
+          <div
+            style={{
+              marginBottom: 8,
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              fontSize: 12,
+              opacity: 0.85,
+            }}
+          >
+            <span style={pill("work")}>Replace = remplace puis re-merge les defaults du site</span>
+            <span style={pill("cp")}>Merge = patch incrémental sur le config actuel</span>
+            <span style={pill(configEditorDirty ? "alert" : "rest")}>
+              {configEditorDirty ? "Modifications non appliquées" : "Synchronisé avec le doc"}
+            </span>
+          </div>
+
+          <textarea
+            style={ui.textarea}
+            value={configEditorText}
+            onChange={(e) => {
+              setConfigEditorText(e.target.value);
+              setConfigEditorDirty(true);
+              setConfigEditorError("");
+              setConfigEditorInfo("");
+            }}
+            spellCheck={false}
+            placeholder='{"rhRules":{"maxConsecutiveDays":6}}'
+          />
+
+          {configEditorError ? (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: "#fca5a5",
+                border: "1px solid rgba(239,68,68,0.25)",
+                background: "rgba(239,68,68,0.08)",
+                borderRadius: 10,
+                padding: "8px 10px",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              ❌ {configEditorError}
+            </div>
+          ) : null}
+
+          {configEditorInfo ? (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color: "#86efac",
+                border: "1px solid rgba(16,185,129,0.25)",
+                background: "rgba(16,185,129,0.08)",
+                borderRadius: 10,
+                padding: "8px 10px",
+              }}
+            >
+              ✅ {configEditorInfo}
+            </div>
+          ) : null}
+
+          <div style={{ marginTop: 10, fontSize: 11, opacity: 0.72, lineHeight: 1.5 }}>
+            Astuce : tu peux coller seulement un patch JSON (ex. <code>{"{"}"rhRules":{"{"}"maxConsecutiveDays":5{"}"}{"}"}</code>)
+            puis cliquer <b>Appliquer (merge)</b>.  
+            Le composant complète automatiquement les clés manquantes avec le modèle du site.
+          </div>
+        </div>
+      )}
 
       {/* Analyse Sprint 3 PRO */}
       {showAnalysisPanel && (
@@ -1325,6 +1897,31 @@ export default function PlanningRH({ adminState }) {
               <div style={{ fontSize: 12, opacity: 0.75 }}>
                 Écarts contrat, règles RH, couverture (besoin vs planifié), compétences, coût estimé
               </div>
+            </div>
+          </div>
+
+          {/* mini statut doc.config */}
+          <div
+            style={{
+              marginBottom: 10,
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(255,255,255,0.02)",
+              borderRadius: 12,
+              padding: 10,
+              fontSize: 12,
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>⚙️ doc.config actif</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", opacity: 0.85 }}>
+              <span>Rules: {doc?.config?.rhRules ? "✅" : "—"}</span>
+              <span>Needs slots: {Object.keys(doc?.config?.needsBySlot || {}).length}</span>
+              <span>Skill coverage: {Object.keys(doc?.config?.skillCoverageBySlot || {}).length}</span>
+              <span>Costing: {doc?.config?.costing ? "✅" : "—"}</span>
+              <span>AutoBalance: {doc?.config?.autoBalance ? "✅" : "—"}</span>
+            </div>
+            <div style={{ marginTop: 6, opacity: 0.7 }}>
+              Modèle par défaut chargé pour <b>{normalizedSite || "site inconnu"}</b>
+              {normalizedSite === "melun" ? " (MELUN)" : ""}.
             </div>
           </div>
 
@@ -1413,7 +2010,6 @@ export default function PlanningRH({ adminState }) {
             </div>
           )}
 
-          {/* top gaps */}
           {topCoverageGaps.length > 0 && (
             <div
               style={{
@@ -1447,7 +2043,6 @@ export default function PlanningRH({ adminState }) {
             </div>
           )}
 
-          {/* alertes compactes */}
           {compactAlerts.length > 0 ? (
             <div style={{ display: "grid", gap: 6 }}>
               {compactAlerts.map((a, i) => {
@@ -1535,7 +2130,6 @@ export default function PlanningRH({ adminState }) {
           </button>
         </div>
 
-        {/* Quick shifts */}
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
             🎯 Affectation rapide sur la cellule sélectionnée
@@ -1556,7 +2150,7 @@ export default function PlanningRH({ adminState }) {
         </div>
       </div>
 
-      {/* KPI semaine (sur lignes affichées) */}
+      {/* KPI semaine */}
       <div style={ui.card} className="planning-print-summary">
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {[
@@ -1695,7 +2289,7 @@ export default function PlanningRH({ adminState }) {
                         />
                       </td>
 
-                      {/* 7 jours (ordre UI dim->sam) */}
+                      {/* 7 jours */}
                       {DAY_KEYS_UI_ORDER.map((dayKey) => {
                         const value = row.cells?.[dayKey] || "";
                         const tone = getCellTone(value);
@@ -1748,7 +2342,6 @@ export default function PlanningRH({ adminState }) {
                                 onChange={(e) => setCell(row.id, dayKey, e.target.value)}
                               />
 
-                              {/* Preview split pour impression murale (créneau + badge code séparés) */}
                               <div
                                 className={`planning-cell-print-preview kind-${printable.kind}`}
                                 aria-hidden="true"
@@ -1768,14 +2361,12 @@ export default function PlanningRH({ adminState }) {
                         );
                       })}
 
-                      {/* Heures */}
                       <td style={ui.td}>
                         <div style={{ textAlign: "center", fontWeight: 800, fontSize: 12 }}>
                           {minutesToHourLabel(row.weeklyMin)}
                         </div>
                       </td>
 
-                      {/* Écart */}
                       <td style={ui.td}>
                         <div
                           style={{
@@ -1793,7 +2384,6 @@ export default function PlanningRH({ adminState }) {
                         </div>
                       </td>
 
-                      {/* Notes */}
                       <td style={ui.td} className="planning-print-hide-col">
                         <input
                           style={{ ...ui.input, padding: "6px 8px", fontSize: 12 }}
@@ -1803,7 +2393,6 @@ export default function PlanningRH({ adminState }) {
                         />
                       </td>
 
-                      {/* Actions */}
                       <td style={ui.td} className="planning-print-hide-col">
                         <button
                           style={ui.btn}
@@ -1822,7 +2411,7 @@ export default function PlanningRH({ adminState }) {
         </div>
       </div>
 
-      {/* Aide de saisie */}
+      {/* Aide */}
       <div style={ui.card} className="planning-print-hide">
         <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 15 }}>💡 Aide de saisie</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
@@ -1839,7 +2428,7 @@ export default function PlanningRH({ adminState }) {
           • Les codes RH / CP / OFF / AT / MAL / ABS ne comptent pas d’heures.<br />
           • Sélectionne une cellule puis utilise les boutons “Affectation rapide”.<br />
           • Le panneau Analyse Sprint 3 lit tes utilitaires si disponibles, sinon fallback local.<br />
-          • Les besoins par créneau / compétences / coûts s’activent via <b>doc.config</b> (optionnel).
+          • <b>doc.config</b> est intégré + éditable en JSON (MELUN par défaut).
         </div>
       </div>
 
@@ -1963,12 +2552,10 @@ export default function PlanningRH({ adminState }) {
             background: #fff !important;
           }
 
-          /* inputs de saisie masqués uniquement sur cellules planning */
           .planning-rh-page .planning-cell-input {
             display: none !important;
           }
 
-          /* mais conserver lisibilité nom/contrat/notes par défaut via styles existants */
           .planning-rh-page td input:not(.planning-cell-input) {
             border: none !important;
             background: transparent !important;
@@ -1982,7 +2569,6 @@ export default function PlanningRH({ adminState }) {
             color: transparent !important;
           }
 
-          /* preview impression mural */
           .planning-rh-page .planning-cell-print-preview {
             display: flex !important;
             flex-direction: column !important;
@@ -2027,13 +2613,17 @@ export default function PlanningRH({ adminState }) {
           .planning-rh-page button {
             display: none !important;
           }
+
+          .planning-rh-page textarea {
+            display: none !important;
+          }
         }
       `}</style>
     </div>
   );
 }
 
-// ---------- mini helpers UI
+// ---------- helpers UI
 function pill(type) {
   let bg = "rgba(255,255,255,0.04)";
   let border = "1px solid rgba(255,255,255,0.10)";
