@@ -1,3 +1,4 @@
+// src/components/setup/SetupHeader.jsx
 import React from "react";
 
 export default function SetupHeader({
@@ -15,6 +16,7 @@ export default function SetupHeader({
   isAdmin,
   goToAdmin,
   goToCockpitSafe,
+  goToPlanning, // ✅ NEW
   handleLogout,
   apiStatus,
   apiError,
@@ -93,6 +95,17 @@ export default function SetupHeader({
             style={ui.input}
           />
         </div>
+
+        {/* ✅ Planning RH toujours accessible depuis Setup */}
+        <button
+          className="btn ghost"
+          onClick={goToPlanning}
+          title="Ouvrir le planning RH hebdomadaire"
+          style={ui.btnGhost}
+          type="button"
+        >
+          📅 Planning RH
+        </button>
 
         {adminLoading ? (
           <button className="btn ghost" disabled title="Vérification…" style={ui.btnGhost}>
