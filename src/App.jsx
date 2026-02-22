@@ -5,29 +5,29 @@ import { useDriveStore } from "./store/useDriveStore";
 
 import Setup from "./components/Setup";
 import Cockpit from "./components/Cockpit";
-import PlanningRH from "./pages/PlanningRH";
 import PinLogin from "./pages/PinLogin";
 import Admin from "./pages/Admin";
+import PlanningRH from "./pages/PlanningRH"; // ✅ NEW
 
 // ------------------------
 // Hash routing (stable sur Vercel sans rewrite)
-//   #/           -> setup
-//   #/cockpit    -> cockpit
-//   #/planning   -> planning
-//   #/admin      -> admin
+//   #/          -> setup
+//   #/cockpit   -> cockpit
+//   #/admin     -> admin
+//   #/planning  -> planning RH
 function hashToScreen(hash) {
   const h = String(hash || "").trim().toLowerCase();
 
   if (h.startsWith("#/admin")) return "admin";
-  if (h.startsWith("#/planning")) return "planning";
   if (h.startsWith("#/cockpit")) return "cockpit";
+  if (h.startsWith("#/planning")) return "planning"; // ✅ NEW
   return "setup";
 }
 
 function screenToHash(screen) {
   if (screen === "admin") return "#/admin";
-  if (screen === "planning") return "#/planning";
   if (screen === "cockpit") return "#/cockpit";
+  if (screen === "planning") return "#/planning"; // ✅ NEW
   return "#/";
 }
 
@@ -37,7 +37,7 @@ export default function App() {
   const goSetup = useDriveStore((s) => s.goSetup);
   const goAdmin = useDriveStore((s) => s.goAdmin);
   const goCockpit = useDriveStore((s) => s.goCockpit);
-  const goPlanning = useDriveStore((s) => s.goPlanning); // ✅ nouveau
+  const goPlanning = useDriveStore((s) => s.goPlanning); // ✅ NEW
 
   const siteCode = useDriveStore((s) => s.siteCode);
 
@@ -52,7 +52,10 @@ export default function App() {
   // ✅ loading rôle (évite redirection admin trop tôt)
   const [roleLoading, setRoleLoading] = useState(true);
 
-  const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
+  const normalizedSite = useMemo(
+    () => (siteCode || "").trim().toLowerCase(),
+    [siteCode]
+  );
 
   const refreshMemberRole = useCallback(
     async (sess, site) => {
@@ -114,10 +117,10 @@ export default function App() {
 
       if (wanted === "admin") {
         goAdmin?.();
-      } else if (wanted === "planning") {
-        goPlanning?.();
       } else if (wanted === "cockpit") {
         goCockpit?.();
+      } else if (wanted === "planning") {
+        goPlanning?.(); // ✅ NEW
       } else {
         goSetup?.();
       }
@@ -129,12 +132,13 @@ export default function App() {
     // listen changes (navigation + back/forward)
     window.addEventListener("hashchange", syncFromHash);
     return () => window.removeEventListener("hashchange", syncFromHash);
-  }, [booting, goAdmin, goPlanning, goCockpit, goSetup]);
+  }, [booting, goAdmin, goCockpit, goPlanning, goSetup]);
 
   // ------------------------
   // 3) Sync screen -> URL(hash) (quand tu cliques sur les boutons)
   useEffect(() => {
     if (booting) return;
+
     const targetHash = screenToHash(screen);
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash;
@@ -170,7 +174,7 @@ export default function App() {
     if (session && screen === "pin") goSetup?.();
   }, [booting, session, screen, goSetup]);
 
-  // Si connecté mais pas de site => setup (sauf setup lui-même)
+  // Si connecté mais pas de site => setup
   useEffect(() => {
     if (booting) return;
     if (session && !normalizedSite && screen !== "setup") goSetup?.();
@@ -179,7 +183,9 @@ export default function App() {
   // Garde-fou admin (uniquement quand roleLoading est fini)
   useEffect(() => {
     if (booting) return;
-    if (screen === "admin" && !roleLoading && memberRole !== "admin") goSetup?.();
+    if (screen === "admin" && !roleLoading && memberRole !== "admin") {
+      goSetup?.();
+    }
   }, [booting, screen, memberRole, roleLoading, goSetup]);
 
   // ------------------------
@@ -195,8 +201,8 @@ export default function App() {
   };
 
   if (screen === "admin") return <Admin />;
-  if (screen === "planning") return <PlanningRH />;
   if (screen === "cockpit") return <Cockpit />;
+  if (screen === "planning") return <PlanningRH />; // ✅ NEW
 
   return <Setup adminState={adminState} />;
 }
