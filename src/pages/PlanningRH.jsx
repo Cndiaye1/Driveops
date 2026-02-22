@@ -3,18 +3,19 @@ import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "../services/supabaseClient";
 import { useDriveStore } from "../store/useDriveStore";
 
-// ✅ Sprint 3 utils (sans planningRecommendations.js)
+// ✅ Sprint 3 utils (version PRO / stable)
 import * as PlanningRules from "../utils/planningRules";
 import * as PlanningAnalyzer from "../utils/planningAnalyzer";
 import * as PlanningAutoBalance from "../utils/planningAutoBalance";
 
 /* =========================================================
-   PlanningRH v2.5 (DriveOps) — Sprint 3 branché
+   PlanningRH v2.6 PRO (DriveOps) — Sprint 3 stable
    - Semaine RH (stockage = lundi)
    - Affichage grille = Dimanche -> Samedi (terrain)
    - Supabase-ready + fallback localStorage
-   - Analyse RH (règles / écarts / besoins) via utilitaires
-   - Auto-balance (si utilitaire dispo)
+   - Analyse RH (règles / écarts / besoins / couverture / coût)
+   - Auto-balance (contrat + contraintes + couverture)
+   - Print A4 paysage v2+ (créneau + badge code séparés)
    ========================================================= */
 
 const ABSENCE_CODES = ["RH", "CP", "OFF", "AT", "MAL", "ABS"];
@@ -115,32 +116,138 @@ function isAbsenceCode(v) {
   return ABSENCE_CODES.includes(String(v || "").trim().toUpperCase());
 }
 
-function parseShiftToMinutes(cell) {
-  const raw = String(cell || "").trim().toUpperCase();
-  if (!raw) return 0;
-  if (isAbsenceCode(raw)) return 0;
-
-  // accepte "06:00-13:30" ou "06h00-13h30" ou "06:00-13:30 / RH"
-  const normalized = raw.replaceAll("H", ":").replace(/\s+/g, "");
-  const m = normalized.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\/([A-Z0-9_-]+))?$/);
-  if (!m) return 0;
-
-  const code = String(m[3] || "").toUpperCase();
-  if (code && isAbsenceCode(code)) return 0;
-
-  const start = hhmmToMin(m[1]);
-  const end = hhmmToMin(m[2]);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
-
-  let diff = end - start;
-  if (diff < 0) diff += 24 * 60; // sécurité nuit
-  return Math.max(0, diff);
-}
-
 function hhmmToMin(hhmm) {
   const [h, m] = String(hhmm || "").split(":").map(Number);
   if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
   return h * 60 + m;
+}
+
+function safeParseCellDetailed(cell) {
+  const candidates = [
+    PlanningRules.parseShiftCellDetailed,
+    PlanningRules.parseCell,
+    PlanningRules.getCellDetails,
+    PlanningRules.defaultParseShiftCellDetailed,
+  ];
+
+  for (const fn of candidates) {
+    try {
+      if (typeof fn === "function") {
+        const res = fn(cell);
+        if (res && typeof res === "object") return res;
+      }
+    } catch (e) {
+      console.warn("[PlanningRH] parse cell helper error:", e?.message || e);
+    }
+  }
+
+  // fallback local
+  const raw = String(cell || "").trim();
+  const normalized = raw.toUpperCase().replaceAll("H", ":").replace(/\s+/g, "");
+  if (!normalized) {
+    return {
+      type: "empty",
+      isWork: false,
+      isAbsence: false,
+      valid: true,
+      code: "",
+      absenceCode: "",
+      startHHMM: "",
+      endHHMM: "",
+      durationMin: 0,
+      raw,
+    };
+  }
+  if (isAbsenceCode(normalized)) {
+    return {
+      type: "absence",
+      isWork: false,
+      isAbsence: true,
+      valid: true,
+      code: normalized,
+      absenceCode: normalized,
+      startHHMM: "",
+      endHHMM: "",
+      durationMin: 0,
+      raw,
+    };
+  }
+
+  const m = normalized.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\/([A-Z0-9_-]+))?$/);
+  if (!m) {
+    return {
+      type: "invalid",
+      isWork: false,
+      isAbsence: false,
+      valid: false,
+      code: "",
+      absenceCode: "",
+      startHHMM: "",
+      endHHMM: "",
+      durationMin: 0,
+      raw,
+    };
+  }
+
+  const code = String(m[3] || "").toUpperCase();
+  if (code && isAbsenceCode(code)) {
+    return {
+      type: "absence",
+      isWork: false,
+      isAbsence: true,
+      valid: true,
+      code,
+      absenceCode: code,
+      startHHMM: "",
+      endHHMM: "",
+      durationMin: 0,
+      raw,
+    };
+  }
+
+  const start = hhmmToMin(m[1]);
+  const endRaw = hhmmToMin(m[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(endRaw)) {
+    return {
+      type: "invalid",
+      isWork: false,
+      isAbsence: false,
+      valid: false,
+      code,
+      absenceCode: "",
+      startHHMM: m[1],
+      endHHMM: m[2],
+      durationMin: 0,
+      raw,
+    };
+  }
+
+  let end = endRaw;
+  let diff = end - start;
+  if (diff < 0) {
+    diff += 24 * 60;
+    end += 24 * 60;
+  }
+
+  return {
+    type: "work",
+    isWork: true,
+    isAbsence: false,
+    valid: true,
+    code,
+    absenceCode: "",
+    startHHMM: m[1],
+    endHHMM: m[2],
+    startMin: start,
+    endMin: end,
+    durationMin: Math.max(0, diff),
+    raw,
+  };
+}
+
+function parseShiftToMinutes(cell) {
+  const d = safeParseCellDetailed(cell);
+  return d?.isWork ? Number(d.durationMin) || 0 : 0;
 }
 
 function minutesToHourLabel(min) {
@@ -162,13 +269,43 @@ function parseContractHours(v) {
 }
 
 function getCellTone(value) {
-  const v = String(value || "").trim().toUpperCase();
-  if (!v) return "empty";
-  if (v === "RH" || v === "OFF") return "rest";
-  if (v === "CP") return "cp";
-  if (v === "AT" || v === "MAL" || v === "ABS") return "alert";
-  if (parseShiftToMinutes(v) > 0) return "work";
+  const d = safeParseCellDetailed(value);
+  if (!d || d.type === "empty") return "empty";
+  if (d.type === "absence") {
+    const code = String(d.absenceCode || d.code || "").toUpperCase();
+    if (code === "RH" || code === "OFF") return "rest";
+    if (code === "CP") return "cp";
+    return "alert";
+  }
+  if (d.type === "work") return "work";
   return "unknown";
+}
+
+function getPrintableCellParts(value) {
+  const d = safeParseCellDetailed(value);
+  if (!d || d.type === "empty") return { kind: "empty", shift: "", badge: "" };
+  if (d.type === "absence") {
+    const code = String(d.absenceCode || d.code || String(value || "").toUpperCase());
+    return { kind: "absence", shift: "", badge: code };
+  }
+  if (d.type === "work") {
+    return {
+      kind: "work",
+      shift: d.startHHMM && d.endHHMM ? `${d.startHHMM}-${d.endHHMM}` : String(value || ""),
+      badge: d.code || "",
+    };
+  }
+  return { kind: "invalid", shift: "", badge: String(value || "") };
+}
+
+function formatCurrencyEUR(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("fr-FR", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 2,
+  }).format(n);
 }
 
 // ---------- modèle data
@@ -197,8 +334,9 @@ function makeRow(name, contractHours = 35) {
     role: "prep", // prep | coordo | autre
     cells: makeEmptyCells(),
     notes: "",
-    skills: [], // sprint 3 ready (optionnel)
-    availability: {}, // sprint 3 ready (optionnel)
+    skills: [], // Sprint 3 PRO: ex ["drive","frais","caisse"]
+    availability: {}, // Sprint 3 PRO: ex { mon: false, tue: ["06:00-14:00"] }
+    hourlyRate: undefined, // optionnel (sinon analyzer fallback rôle/default)
   };
 }
 
@@ -209,6 +347,13 @@ function makePlanningDoc({ siteCode, weekStartMonday, rows = [] }) {
     rows,
     updatedAt: new Date().toISOString(),
     version: 2,
+    // config optionnelle (Sprint 3 PRO)
+    // config: {
+    //   rhRules: {...},
+    //   needsBySlot: { mon: { "06:00-08:00": 2 } },
+    //   skillCoverageBySlot: { mon: { "08:00-10:00": { drive:1 } } },
+    //   costing: { defaultHourlyRate:12, hourlyRatesByRole:{ prep:12, coordo:14.5 } }
+    // }
   };
 }
 
@@ -262,18 +407,20 @@ function buildAnalyzerInput({ doc, rowsWithStats, normalizedSite, weekStartMonda
     weekStartMonday,
     dayKeysMonStart: DAY_KEYS_MON_START,
     dayKeysUiOrder: DAY_KEYS_UI_ORDER,
+    planningDoc: doc,
+    docConfig: doc?.config || {},
     rows: (doc?.rows || []).map((r) => ({
       ...r,
       contractHours: Number(r.contractHours) || 0,
       weeklyMinutes: computeRowWeeklyMinutes(r.cells || {}),
       weeklyHours: Math.round((computeRowWeeklyMinutes(r.cells || {}) / 60) * 100) / 100,
     })),
-    rowsWithStats,
+    rowsWithStats, // version enrichie (all rows)
   };
 }
 
 function runPlanningAnalysis(input) {
-  // essaie plusieurs noms possibles selon ton utilitaire réel
+  // signatures fixes + alias rétrocompatibles
   const candidates = [
     PlanningAnalyzer.analyzePlanning,
     PlanningAnalyzer.analyzeWeekPlanning,
@@ -287,7 +434,7 @@ function runPlanningAnalysis(input) {
     if (res) return res;
   }
 
-  // fallback local minimal (si utilitaire pas encore finalisé)
+  // fallback local minimal
   const rows = input?.rows || [];
   const warnings = [];
   const byDay = {};
@@ -320,12 +467,16 @@ function runPlanningAnalysis(input) {
     summary: {
       staffCount: rows.length,
       warningsCount: warnings.length,
+      coverageGapsCount: 0,
+      estimatedPayrollCost: 0,
     },
     byDay,
     warnings,
     rulesResults: [],
     needsBySlot: [],
     coverageGaps: [],
+    costs: { totalEstimated: 0, currency: "EUR" },
+    coverageSummary: { byDay: {} },
   };
 }
 
@@ -395,7 +546,6 @@ export default function PlanningRH({ adminState }) {
   const preparateursList = useDriveStore((s) => s.preparateursList || []);
   const coordosList = useDriveStore((s) => s.coordosList || []);
 
-  const screen = useDriveStore((s) => s.screen);
   const goSetup = useDriveStore((s) => s.goSetup);
   const goCockpit = useDriveStore((s) => s.goCockpit);
 
@@ -518,8 +668,15 @@ export default function PlanningRH({ adminState }) {
             notes: r.notes || "",
             skills: Array.isArray(r.skills) ? r.skills : [],
             availability: r.availability && typeof r.availability === "object" ? r.availability : {},
+            hourlyRate:
+              Number.isFinite(Number(r.hourlyRate)) && Number(r.hourlyRate) > 0
+                ? Number(r.hourlyRate)
+                : undefined,
           }))
         : [];
+
+      // config optionnelle
+      loaded.config = loaded.config && typeof loaded.config === "object" ? loaded.config : {};
 
       setDoc(loaded);
       setSaveStatus("idle");
@@ -571,7 +728,7 @@ export default function PlanningRH({ adminState }) {
     setAutoAddFromDriveOpsDone(true);
   }, [loading, autoAddFromDriveOpsDone, doc?.rows, preparateursList, coordosList]);
 
-  // reset auto-merge flag when week changes
+  // reset auto-merge flag when week/site changes
   useEffect(() => {
     setAutoAddFromDriveOpsDone(false);
   }, [weekStartMonday, normalizedSite]);
@@ -733,6 +890,16 @@ export default function PlanningRH({ adminState }) {
     });
   }, [filteredRows]);
 
+  // Analyse RH = sur TOUT le planning (pas seulement les lignes filtrées UI)
+  const allRowsWithStats = useMemo(() => {
+    return (doc.rows || []).map((r) => {
+      const weeklyMin = computeRowWeeklyMinutes(r.cells);
+      const targetMin = parseContractHours(r.contractHours) * 60;
+      const diffMin = weeklyMin - targetMin;
+      return { ...r, weeklyMin, targetMin, diffMin };
+    });
+  }, [doc.rows]);
+
   const totals = useMemo(() => {
     const totalPlanned = rowsWithStats.reduce((s, r) => s + r.weeklyMin, 0);
     const totalTarget = rowsWithStats.reduce((s, r) => s + r.targetMin, 0);
@@ -749,11 +916,11 @@ export default function PlanningRH({ adminState }) {
     () =>
       buildAnalyzerInput({
         doc,
-        rowsWithStats,
+        rowsWithStats: allRowsWithStats,
         normalizedSite,
         weekStartMonday,
       }),
-    [doc, rowsWithStats, normalizedSite, weekStartMonday, analysisRefreshTick]
+    [doc, allRowsWithStats, normalizedSite, weekStartMonday, analysisRefreshTick]
   );
 
   const analysisResult = useMemo(() => {
@@ -787,9 +954,18 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
+    // coverage gaps (top)
+    const cg = (analysisResult?.analysis?.coverageGaps || []).slice(0, 6);
+    for (const g of cg) {
+      arr.push({
+        level: g.severity || "warning",
+        text: g.message || `${g.dayKey?.toUpperCase() || ""} ${g.slotKey || ""} — gap couverture`,
+      });
+    }
+
     // fallback simple if no util output
     if (arr.length === 0) {
-      const majorDiff = (rowsWithStats || [])
+      const majorDiff = (allRowsWithStats || [])
         .filter((r) => Math.abs(r.diffMin) >= 120)
         .slice(0, 6)
         .map((r) => ({
@@ -801,8 +977,25 @@ export default function PlanningRH({ adminState }) {
       arr.push(...majorDiff);
     }
 
-    return arr.slice(0, 10);
-  }, [analysisResult, rowsWithStats]);
+    return arr.slice(0, 12);
+  }, [analysisResult, allRowsWithStats]);
+
+  const topCoverageGaps = useMemo(() => {
+    return [...(analysisResult?.analysis?.coverageGaps || [])]
+      .sort((a, b) => (b.gap || 0) - (a.gap || 0))
+      .slice(0, 6);
+  }, [analysisResult]);
+
+  const coverageByDayMini = useMemo(() => {
+    const byDay = analysisResult?.analysis?.coverageSummary?.byDay || {};
+    return DAY_KEYS_MON_START.map((k) => ({
+      dayKey: k,
+      totalGap: byDay?.[k]?.totalGap || 0,
+      totalNeed: byDay?.[k]?.totalNeed || 0,
+      totalPlanned: byDay?.[k]?.totalPlanned || 0,
+      skillGapsCount: byDay?.[k]?.skillGapsCount || 0,
+    }));
+  }, [analysisResult]);
 
   const handleRunAutoBalance = useCallback(async () => {
     if (autoBalanceRunning) return;
@@ -813,7 +1006,6 @@ export default function PlanningRH({ adminState }) {
     try {
       const input = {
         ...analysisInput,
-        // on passe aussi des paramètres génériques utiles
         options: {
           mode: "contract-balance",
           toleranceMinutes: 30,
@@ -822,7 +1014,10 @@ export default function PlanningRH({ adminState }) {
         },
       };
 
-      const result = runAutoBalance(input);
+      const result = runAutoBalance({
+        ...input,
+        rows: doc.rows || [],
+      });
 
       if (!result) {
         setAutoBalanceMessage("Auto-balance indisponible (utilitaire non exposé ou pas encore finalisé).");
@@ -848,10 +1043,13 @@ export default function PlanningRH({ adminState }) {
         (Array.isArray(result.patches) ? result.patches.length : 0) ||
         0;
 
+      const rem = result?.diagnostics?.remainingPatchBudget;
+      const extra = typeof rem === "number" ? ` • budget restant ${rem}` : "";
+
       setAutoBalanceMessage(
         appliedCount > 0
-          ? `Auto-balance appliqué ✅ (${appliedCount} ajustement${appliedCount > 1 ? "s" : ""})`
-          : "Auto-balance exécuté ✅"
+          ? `Auto-balance appliqué ✅ (${appliedCount} ajustement${appliedCount > 1 ? "s" : ""}${extra})`
+          : "Auto-balance exécuté ✅ (aucun ajustement nécessaire)"
       );
     } catch (e) {
       console.error(e);
@@ -861,7 +1059,7 @@ export default function PlanningRH({ adminState }) {
     }
   }, [autoBalanceRunning, analysisInput, doc.rows]);
 
-  // ---------- impression A4 paysage (v2)
+  // ---------- impression A4 paysage (v2+)
   const handlePrint = useCallback(() => {
     try {
       window.print();
@@ -961,6 +1159,19 @@ export default function PlanningRH({ adminState }) {
     if (saveStatus === "error") return { text: "Erreur", tone: "#fca5a5" };
     return { text: "Prêt", tone: "#cbd5e1" };
   }, [saving, saveStatus]);
+
+  const estimatedCost =
+    analysisResult?.analysis?.costs?.totalEstimated ??
+    analysisResult?.analysis?.summary?.estimatedPayrollCost ??
+    0;
+
+  const violationsCount = (analysisResult?.rules?.violations || []).length;
+  const rulesWarningsCount = (analysisResult?.rules?.warnings || []).length;
+  const analyzerWarningsCount = (analysisResult?.analysis?.warnings || []).length;
+  const coverageGapsCount = (analysisResult?.analysis?.coverageGaps || []).length;
+  const skillGapsCount =
+    analysisResult?.analysis?.summary?.skillCoverageGapsCount ||
+    (analysisResult?.analysis?.coverageGaps || []).filter((g) => g.type === "coverage_skill_gap").length;
 
   return (
     <div style={ui.page} className="planning-rh-page">
@@ -1085,7 +1296,7 @@ export default function PlanningRH({ adminState }) {
         ) : null}
       </div>
 
-      {/* Analyse Sprint 3 */}
+      {/* Analyse Sprint 3 PRO */}
       {showAnalysisPanel && (
         <div style={ui.card} className="planning-print-hide">
           <div
@@ -1099,39 +1310,133 @@ export default function PlanningRH({ adminState }) {
             }}
           >
             <div>
-              <h2 style={{ margin: 0, fontSize: 16 }}>📊 Analyse RH Sprint 3</h2>
+              <h2 style={{ margin: 0, fontSize: 16 }}>📊 Analyse RH Sprint 3 PRO</h2>
               <div style={{ fontSize: 12, opacity: 0.75 }}>
-                Écarts contrat, alertes règles RH, couverture (selon utilitaires disponibles)
+                Écarts contrat, règles RH, couverture (besoin vs planifié), compétences, coût estimé
               </div>
             </div>
           </div>
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
             <div style={ui.kpi}>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>Alerte(s)</div>
-              <div style={{ fontWeight: 800, marginTop: 4 }}>
-                {(analysisResult?.analysis?.warnings || []).length +
-                  (analysisResult?.rules?.violations || []).length}
-              </div>
-            </div>
-            <div style={ui.kpi}>
               <div style={{ fontSize: 11, opacity: 0.75 }}>Collaborateurs</div>
               <div style={{ fontWeight: 800, marginTop: 4 }}>{(doc.rows || []).length}</div>
             </div>
             <div style={ui.kpi}>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>Heures planifiées</div>
-              <div style={{ fontWeight: 800, marginTop: 4 }}>{minutesToHourLabel(totals.totalPlanned)}</div>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>Heures planifiées (global)</div>
+              <div style={{ fontWeight: 800, marginTop: 4 }}>
+                {minutesToHourLabel(analysisResult?.analysis?.summary?.totalPlannedMinutes || 0)}
+              </div>
             </div>
             <div style={ui.kpi}>
-              <div style={{ fontSize: 11, opacity: 0.75 }}>Δ global</div>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>Δ global (contrats)</div>
               <div style={{ fontWeight: 800, marginTop: 4 }}>
-                {totals.diff === 0
-                  ? "OK"
-                  : `${totals.diff > 0 ? "+" : "-"}${minutesToHourLabel(Math.abs(totals.diff))}`}
+                {(() => {
+                  const d = Number(analysisResult?.analysis?.summary?.totalDeltaMinutes || 0);
+                  if (!d) return "OK";
+                  return `${d > 0 ? "+" : "-"}${minutesToHourLabel(Math.abs(d))}`;
+                })()}
               </div>
+            </div>
+            <div style={ui.kpi}>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>Violations RH</div>
+              <div style={{ fontWeight: 800, marginTop: 4 }}>{violationsCount}</div>
+            </div>
+            <div style={ui.kpi}>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>Gaps couverture</div>
+              <div style={{ fontWeight: 800, marginTop: 4 }}>
+                {coverageGapsCount}
+                {skillGapsCount ? (
+                  <span style={{ opacity: 0.75, fontWeight: 600 }}> • skills {skillGapsCount}</span>
+                ) : null}
+              </div>
+            </div>
+            <div style={ui.kpi}>
+              <div style={{ fontSize: 11, opacity: 0.75 }}>Coût estimé masse salariale</div>
+              <div style={{ fontWeight: 800, marginTop: 4 }}>{formatCurrencyEUR(estimatedCost)}</div>
             </div>
           </div>
 
+          {/* mini synthèse couverture par jour */}
+          {coverageByDayMini.some((d) => d.totalNeed > 0 || d.totalPlanned > 0 || d.totalGap > 0) && (
+            <div
+              style={{
+                marginBottom: 10,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.02)",
+                borderRadius: 12,
+                padding: 10,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
+                🧩 Besoin vs planifié (agrégé par jour)
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {coverageByDayMini.map((d) => {
+                  const tone =
+                    d.totalGap > 0 ? "#fca5a5" : d.totalNeed > 0 ? "#86efac" : "#cbd5e1";
+
+                  return (
+                    <div
+                      key={d.dayKey}
+                      style={{
+                        minWidth: 120,
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        background: "rgba(255,255,255,0.015)",
+                        padding: "8px 10px",
+                        fontSize: 12,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, marginBottom: 3 }}>{d.dayKey.toUpperCase()}</div>
+                      <div style={{ opacity: 0.8 }}>Planifié: {d.totalPlanned}</div>
+                      <div style={{ opacity: 0.8 }}>Besoin: {d.totalNeed}</div>
+                      <div style={{ color: tone, fontWeight: 700 }}>
+                        Gap: {d.totalGap}
+                        {d.skillGapsCount ? ` • skills ${d.skillGapsCount}` : ""}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* top gaps */}
+          {topCoverageGaps.length > 0 && (
+            <div
+              style={{
+                marginBottom: 10,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.02)",
+                borderRadius: 12,
+                padding: 10,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
+                🚨 Top gaps couverture / compétences
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {topCoverageGaps.map((g, i) => (
+                  <div
+                    key={`${g.type}-${g.dayKey}-${g.slotKey}-${g.skill || "total"}-${i}`}
+                    style={{
+                      borderRadius: 8,
+                      border: "1px solid rgba(255,255,255,0.06)",
+                      background: "rgba(255,255,255,0.015)",
+                      padding: "6px 8px",
+                      fontSize: 12,
+                    }}
+                  >
+                    <span style={{ color: g.severity === "high" ? "#fca5a5" : "#fcd34d" }}>● </span>
+                    {g.message}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* alertes compactes */}
           {compactAlerts.length > 0 ? (
             <div style={{ display: "grid", gap: 6 }}>
               {compactAlerts.map((a, i) => {
@@ -1167,6 +1472,17 @@ export default function PlanningRH({ adminState }) {
               Aucune alerte majeure détectée pour l’instant ✅
             </div>
           )}
+
+          <div style={{ marginTop: 10, fontSize: 11, opacity: 0.7 }}>
+            Notes: les besoins/compétences/coûts s’activent automatiquement si <code>doc.config</code> est
+            renseigné. Sans config, l’écran reste fonctionnel (fallback).
+            {(analyzerWarningsCount || rulesWarningsCount) ? (
+              <span>
+                {" "}
+                • Warnings: analyse {analyzerWarningsCount} / règles {rulesWarningsCount}
+              </span>
+            ) : null}
+          </div>
         </div>
       )}
 
@@ -1229,11 +1545,11 @@ export default function PlanningRH({ adminState }) {
         </div>
       </div>
 
-      {/* KPI semaine */}
+      {/* KPI semaine (sur lignes affichées) */}
       <div style={ui.card} className="planning-print-summary">
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {[
-            ["👥 Collaborateurs", String(totals.staff)],
+            ["👥 Collaborateurs (affichés)", String(totals.staff)],
             ["⏱️ Heures planifiées", minutesToHourLabel(totals.totalPlanned)],
             ["🎯 Heures cibles", minutesToHourLabel(totals.totalTarget)],
             [
@@ -1330,6 +1646,25 @@ export default function PlanningRH({ adminState }) {
                             >
                               {row.role === "coordo" ? "🧭 Coordo" : "👷 Prépa"}
                             </span>
+                            {Array.isArray(row.skills) && row.skills.length > 0 ? (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  borderRadius: 999,
+                                  padding: "2px 7px",
+                                  border: "1px solid rgba(59,130,246,0.20)",
+                                  background: "rgba(59,130,246,0.10)",
+                                  opacity: 0.95,
+                                  maxWidth: 150,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                                title={`Skills: ${row.skills.join(", ")}`}
+                              >
+                                🧠 {row.skills.join(", ")}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       </td>
@@ -1353,6 +1688,7 @@ export default function PlanningRH({ adminState }) {
                       {DAY_KEYS_UI_ORDER.map((dayKey) => {
                         const value = row.cells?.[dayKey] || "";
                         const tone = getCellTone(value);
+                        const printable = getPrintableCellParts(value);
 
                         let bg = "rgba(255,255,255,0.02)";
                         let border = "1px solid rgba(255,255,255,0.08)";
@@ -1375,29 +1711,48 @@ export default function PlanningRH({ adminState }) {
 
                         return (
                           <td key={`${row.id}-${dayKey}`} style={ui.td}>
-                            <input
-                              style={{
-                                ...ui.input,
-                                textAlign: "center",
-                                background: bg,
-                                border: isSelected
-                                  ? "1px solid rgba(239,68,68,0.65)"
-                                  : border,
-                                boxShadow: isSelected
-                                  ? "0 0 0 2px rgba(239,68,68,0.16)"
-                                  : "none",
-                                fontWeight: 700,
-                                padding: "6px 6px",
-                                fontSize: 12,
-                              }}
-                              value={value}
-                              placeholder="06:00-13:30 / RH"
-                              onFocus={() => {
-                                setSelectedRowId(row.id);
-                                setSelectedDayKey(dayKey);
-                              }}
-                              onChange={(e) => setCell(row.id, dayKey, e.target.value)}
-                            />
+                            <div className={`planning-cell-wrap tone-${tone}`}>
+                              <input
+                                className="planning-cell-input"
+                                style={{
+                                  ...ui.input,
+                                  textAlign: "center",
+                                  background: bg,
+                                  border: isSelected
+                                    ? "1px solid rgba(239,68,68,0.65)"
+                                    : border,
+                                  boxShadow: isSelected
+                                    ? "0 0 0 2px rgba(239,68,68,0.16)"
+                                    : "none",
+                                  fontWeight: 700,
+                                  padding: "6px 6px",
+                                  fontSize: 12,
+                                }}
+                                value={value}
+                                placeholder="06:00-13:30 / RH"
+                                onFocus={() => {
+                                  setSelectedRowId(row.id);
+                                  setSelectedDayKey(dayKey);
+                                }}
+                                onChange={(e) => setCell(row.id, dayKey, e.target.value)}
+                              />
+
+                              {/* Preview split pour impression murale (créneau + badge code séparés) */}
+                              <div
+                                className={`planning-cell-print-preview kind-${printable.kind}`}
+                                aria-hidden="true"
+                              >
+                                {printable.shift ? (
+                                  <span className="planning-cell-slot">{printable.shift}</span>
+                                ) : null}
+                                {printable.badge ? (
+                                  <span className="planning-cell-badge">{printable.badge}</span>
+                                ) : null}
+                                {!printable.shift && !printable.badge ? (
+                                  <span className="planning-cell-empty">—</span>
+                                ) : null}
+                              </div>
+                            </div>
                           </td>
                         );
                       })}
@@ -1432,7 +1787,7 @@ export default function PlanningRH({ adminState }) {
                         <input
                           style={{ ...ui.input, padding: "6px 8px", fontSize: 12 }}
                           value={row.notes || ""}
-                          placeholder="ex: indispo mardi soir"
+                          placeholder="ex: indispo mardi soir | rate:13.2"
                           onChange={(e) => upsertRow(row.id, { notes: e.target.value })}
                         />
                       </td>
@@ -1461,6 +1816,7 @@ export default function PlanningRH({ adminState }) {
         <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 15 }}>💡 Aide de saisie</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
           <span style={pill("work")}>Shift : 06:00-13:30</span>
+          <span style={pill("work")}>Shift + badge : 06:00-13:30/DRIVE</span>
           <span style={pill("rest")}>RH / OFF</span>
           <span style={pill("cp")}>CP</span>
           <span style={pill("alert")}>AT / MAL / ABS</span>
@@ -1468,14 +1824,65 @@ export default function PlanningRH({ adminState }) {
 
         <div style={{ marginTop: 10, opacity: 0.8, fontSize: 12, lineHeight: 1.45 }}>
           • Les heures se calculent automatiquement à partir des formats <b>HH:MM-HH:MM</b>.<br />
+          • Tu peux ajouter un badge suffixe (ex. <b>/DRIVE</b>, <b>/CAISSE</b>) pour l’affichage mural.<br />
           • Les codes RH / CP / OFF / AT / MAL / ABS ne comptent pas d’heures.<br />
           • Sélectionne une cellule puis utilise les boutons “Affectation rapide”.<br />
-          • Le panneau Analyse Sprint 3 lit tes utilitaires si disponibles, sinon fallback local.
+          • Le panneau Analyse Sprint 3 lit tes utilitaires si disponibles, sinon fallback local.<br />
+          • Les besoins par créneau / compétences / coûts s’activent via <b>doc.config</b> (optionnel).
         </div>
       </div>
 
       {/* Print styles */}
       <style>{`
+        .planning-cell-print-preview {
+          display: none;
+        }
+
+        .planning-cell-wrap {
+          display: grid;
+          gap: 4px;
+        }
+
+        .planning-cell-print-preview .planning-cell-slot {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2px 4px;
+          border-radius: 6px;
+          border: 1px solid rgba(255,255,255,0.10);
+          background: rgba(255,255,255,0.03);
+          font-weight: 700;
+          font-size: 10px;
+          line-height: 1.1;
+        }
+
+        .planning-cell-print-preview .planning-cell-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2px 4px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.04);
+          font-size: 9px;
+          line-height: 1;
+          font-weight: 700;
+          letter-spacing: .2px;
+        }
+
+        .planning-cell-print-preview.kind-work .planning-cell-slot {
+          border-color: rgba(59,130,246,0.30);
+          background: rgba(59,130,246,0.10);
+        }
+        .planning-cell-print-preview.kind-absence .planning-cell-badge {
+          border-color: rgba(16,185,129,0.25);
+          background: rgba(16,185,129,0.10);
+        }
+        .planning-cell-print-preview.kind-invalid .planning-cell-badge {
+          border-color: rgba(239,68,68,0.25);
+          background: rgba(239,68,68,0.10);
+        }
+
         @media print {
           @page {
             size: A4 landscape;
@@ -1545,18 +1952,65 @@ export default function PlanningRH({ adminState }) {
             background: #fff !important;
           }
 
-          .planning-rh-page input {
+          /* inputs de saisie masqués uniquement sur cellules planning */
+          .planning-rh-page .planning-cell-input {
+            display: none !important;
+          }
+
+          /* mais conserver lisibilité nom/contrat/notes par défaut via styles existants */
+          .planning-rh-page td input:not(.planning-cell-input) {
             border: none !important;
             background: transparent !important;
             box-shadow: none !important;
             color: #111 !important;
             padding: 0 !important;
             font-size: 10px !important;
-            text-align: center !important;
           }
 
-          .planning-rh-page input::placeholder {
+          .planning-rh-page td input::placeholder {
             color: transparent !important;
+          }
+
+          /* preview impression mural */
+          .planning-rh-page .planning-cell-print-preview {
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 2px !important;
+            align-items: stretch !important;
+            justify-content: center !important;
+            min-height: 24px !important;
+          }
+
+          .planning-rh-page .planning-cell-print-preview .planning-cell-slot {
+            display: inline-flex !important;
+            justify-content: center !important;
+            border: 1px solid #bbb !important;
+            background: #f5f5f5 !important;
+            color: #111 !important;
+            border-radius: 4px !important;
+            padding: 1px 2px !important;
+            font-size: 9px !important;
+            font-weight: 700 !important;
+            line-height: 1.1 !important;
+          }
+
+          .planning-rh-page .planning-cell-print-preview .planning-cell-badge {
+            display: inline-flex !important;
+            justify-content: center !important;
+            border: 1px solid #aaa !important;
+            background: #fff !important;
+            color: #111 !important;
+            border-radius: 999px !important;
+            padding: 1px 3px !important;
+            font-size: 8px !important;
+            font-weight: 700 !important;
+            line-height: 1 !important;
+          }
+
+          .planning-rh-page .planning-cell-empty {
+            text-align: center !important;
+            opacity: 0.45 !important;
+            font-size: 9px !important;
           }
 
           .planning-rh-page button {

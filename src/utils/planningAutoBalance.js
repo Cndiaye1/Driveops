@@ -1,702 +1,459 @@
 // src/utils/planningAutoBalance.js
+// DriveOps — RH Planning AutoBalance (stable signatures + aliases)
+// Heuristique pragmatique : équilibre contrat + limite les dégâts couverture + respecte règles bloquantes.
 
 import {
-  DEFAULT_SHIFT_LIBRARY,
-  parseCellValue,
-  buildShiftCellValue,
-  getContractTargetMinutes,
-  getCellWorkedMinutes,
-  RH_CODES,
-} from "./planning";
-import {
-  evaluateRowAgainstRules,
-  canAssignShiftOnDay,
-  canReplaceShiftOnDay,
+  DAY_KEYS_MON_START,
+  parseShiftCellDetailed,
+  parseShiftToMinutes,
+  computeRowWeeklyMinutes,
+  contractHoursToMinutes,
+  wouldViolateRulesForCell,
+  checkAvailabilityForCell,
 } from "./planningRules";
-import {
-  computePlanningAnalysis,
-  getCoverageGapsByDay,
-} from "./planningAnalyzer";
+import { analyzePlanning } from "./planningAnalyzer";
 
-/**
- * =========================================================
- * Auto-balance RH (Sprint 3)
- * ---------------------------------------------------------
- * Idée:
- * 1) Identifier les collaborateurs sous-planifiés
- * 2) Identifier les jours en sous-couverture (coverage gaps)
- * 3) Essayer en priorité :
- *    - de déplacer un shift d'une journée "sur-couverte" vers un gap
- *    - sinon d'ajouter un shift sur une case vide compatible
- * 4) Générer un plan d'actions + aperçu du planning simulé
- *
- * NOTE:
- * - Ce module NE modifie pas l'UI directement.
- * - Il renvoie des "propositions" et/ou un "draftRows" simulé.
- * - L'UI (PlanningRH.jsx) décide d'appliquer / prévisualiser / confirmer.
- * =========================================================
- */
+const DEFAULT_SHIFT_TEMPLATES = [
+  { label: "Long matin", value: "06:00-13:30", minutes: 450, roles: ["prep", "coordo"] },
+  { label: "Journée", value: "09:00-17:00", minutes: 480, roles: ["prep", "coordo"] },
+  { label: "Fermeture", value: "13:30-21:00", minutes: 450, roles: ["prep", "coordo"] },
+  { label: "Court matin", value: "06:00-10:00", minutes: 240, roles: ["prep", "coordo"] },
+  { label: "Midi", value: "11:00-15:00", minutes: 240, roles: ["prep", "coordo"] },
+  { label: "Soir", value: "17:00-21:30", minutes: 270, roles: ["prep", "coordo"] },
+  { label: "Coordo journée", value: "08:00-16:00", minutes: 480, roles: ["coordo"] },
+  { label: "Coordo ouverture", value: "06:00-14:00", minutes: 480, roles: ["coordo"] },
+];
 
-/* -------------------------------------------------------
- * Helpers
- * ----------------------------------------------------- */
+const DEFAULT_OPTIONS = {
+  mode: "contract-balance",
+  toleranceMinutes: 30,
+  maxPatches: 60,
+  keepAbsenceCodes: true,
+  preserveManualCodes: true, // si suffixe /CODE présent, on évite de toucher
+  allowSetRestOnOverplan: true,
+  rebalanceCoverage: true,
+  rules: {}, // passed to planningRules.evaluatePlanningRules via wouldViolateRulesForCell
+};
 
-function upper(v) {
-  return String(v || "").trim().toUpperCase();
+function cloneRows(rows = []) {
+  return rows.map((r) => ({
+    ...r,
+    cells: { ...(r?.cells || {}) },
+    skills: Array.isArray(r?.skills) ? [...r.skills] : r?.skills,
+    availability: r?.availability && typeof r.availability === "object" ? { ...r.availability } : r?.availability,
+  }));
 }
 
-function clone(obj) {
-  return JSON.parse(JSON.stringify(obj));
+function normalizeRole(role) {
+  return String(role || "prep").trim().toLowerCase();
 }
 
-function getDayKeysFromOptions(options = {}) {
-  // ordre logique lundi -> dimanche
-  return Array.isArray(options.dayKeys) && options.dayKeys.length === 7
-    ? options.dayKeys
-    : ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+function getShiftTemplates(input, options) {
+  const cfg = input?.docConfig || input?.planningDoc?.config || {};
+  const custom = Array.isArray(cfg?.autoBalance?.shiftTemplates)
+    ? cfg.autoBalance.shiftTemplates
+    : Array.isArray(cfg?.shiftTemplates)
+    ? cfg.shiftTemplates
+    : null;
+
+  const src = custom && custom.length ? custom : DEFAULT_SHIFT_TEMPLATES;
+  return src
+    .map((s) => {
+      const value = String(s?.value || "").trim().toUpperCase();
+      const d = parseShiftCellDetailed(value);
+      if (!d.isWork) return null;
+      return {
+        label: s?.label || value,
+        value,
+        minutes: d.durationMin,
+        roles: Array.isArray(s?.roles) && s.roles.length ? s.roles.map((r) => String(r).toLowerCase()) : null,
+      };
+    })
+    .filter(Boolean);
 }
 
-function getShiftLibrary(options = {}) {
-  return Array.isArray(options.shiftLibrary) && options.shiftLibrary.length
-    ? options.shiftLibrary
-    : DEFAULT_SHIFT_LIBRARY;
-}
-
-function getMinCoverageByDay(options = {}) {
-  // ex: { mon: 4, tue: 4, ... } ou nombre fixe
-  const dayKeys = getDayKeysFromOptions(options);
-  const raw = options.minCoverageByDay;
-
-  if (typeof raw === "number") {
-    const out = {};
-    for (const d of dayKeys) out[d] = Math.max(0, Math.floor(raw));
-    return out;
+function getCoveragePriorityMap(analysis) {
+  const map = new Map(); // key dayKey -> score
+  const gaps = Array.isArray(analysis?.coverageGaps) ? analysis.coverageGaps : [];
+  for (const g of gaps) {
+    const cur = map.get(g.dayKey) || 0;
+    const weight =
+      g.type === "coverage_total_gap"
+        ? (g.gap || 1) * 3
+        : g.type === "coverage_skill_gap"
+        ? (g.gap || 1) * 2
+        : 1;
+    map.set(g.dayKey, cur + weight);
   }
+  return map;
+}
 
-  if (raw && typeof raw === "object") {
-    const out = {};
-    for (const d of dayKeys) out[d] = Math.max(0, Math.floor(Number(raw[d]) || 0));
-    return out;
+function rowDeltaMinutes(row) {
+  return computeRowWeeklyMinutes(row?.cells || {}) - contractHoursToMinutes(row?.contractHours);
+}
+
+function hasManualSuffixCode(cell) {
+  const d = parseShiftCellDetailed(cell);
+  return d.isWork && !!d.code;
+}
+
+function canTouchCell(cell, opts) {
+  const d = parseShiftCellDetailed(cell);
+  if (d.type === "absence" && opts.keepAbsenceCodes) return false;
+  if (opts.preserveManualCodes && hasManualSuffixCode(cell)) return false;
+  return true;
+}
+
+function daySortForUnderplan(row, analysis, dayKeys) {
+  const coverageMap = getCoveragePriorityMap(analysis);
+  const rowsByDayDeficit = dayKeys.map((dayKey, idx) => {
+    const cell = row?.cells?.[dayKey];
+    const d = parseShiftCellDetailed(cell);
+    const hasWork = d.isWork;
+    const hasAny = d.type !== "empty";
+    const coverageScore = coverageMap.get(dayKey) || 0;
+
+    // priorité : jours vides > jours repos/absence > jours déjà travaillés
+    let base = 0;
+    if (!hasAny) base = 100;
+    else if (!hasWork) base = 70;
+    else base = 20;
+
+    return {
+      dayKey,
+      idx,
+      score: base + coverageScore,
+      hasWork,
+      cell,
+    };
+  });
+
+  return rowsByDayDeficit.sort((a, b) => b.score - a.score);
+}
+
+function scoreTemplateForDayShift(templateValue, dayKey, currentAnalysis) {
+  const d = parseShiftCellDetailed(templateValue);
+  if (!d.isWork) return 0;
+
+  let score = d.durationMin / 60; // base : favorise les longues durées pour combler déficit contrat
+  if (!currentAnalysis?.needsBySlot?.length) return score;
+
+  // bonus si couvre des slots en gap total / skill
+  const slotsForDay = currentAnalysis.needsBySlot.filter((s) => s.dayKey === dayKey);
+  for (const slot of slotsForDay) {
+    const slotD = parseShiftCellDetailed(`${slot.slotStart}-${slot.slotEnd}`);
+    if (!slotD.isWork) continue;
+    const overlap = d.startMin < slotD.endMin && d.endMin > slotD.startMin;
+    if (!overlap) continue;
+
+    if (slot.totalGap > 0) score += slot.totalGap * 3;
+    if ((slot.skillGaps || []).length > 0) score += (slot.skillGaps || []).length * 2;
   }
-
-  // défaut prudent
-  const out = {};
-  for (const d of dayKeys) out[d] = 0;
-  return out;
-}
-
-function getRowName(row) {
-  return upper(row?.name || row?.staff_name || "");
-}
-
-function getRowContractHours(row) {
-  const n = Number(row?.contractHours ?? row?.contract_hours);
-  return Number.isFinite(n) ? Math.max(0, n) : 35;
-}
-
-/**
- * Compat rows:
- * - format PlanningRH: row.cells[dayKey] = "06:00-13:30" / "RH"
- * - format futur: row.days[dayKey] = ...
- */
-function getRowDayValue(row, dayKey) {
-  if (row?.cells && Object.prototype.hasOwnProperty.call(row.cells, dayKey)) return row.cells[dayKey];
-  if (row?.days && Object.prototype.hasOwnProperty.call(row.days, dayKey)) return row.days[dayKey];
-  return "";
-}
-
-function setRowDayValue(row, dayKey, value) {
-  if (row?.cells) {
-    row.cells[dayKey] = value;
-    return;
-  }
-  if (row?.days) {
-    row.days[dayKey] = value;
-    return;
-  }
-  // fallback
-  row.cells = row.cells || {};
-  row.cells[dayKey] = value;
-}
-
-function isCellEmpty(value) {
-  return !String(value || "").trim();
-}
-
-function isWorkedShiftCell(value) {
-  return getCellWorkedMinutes(value) > 0;
-}
-
-function isNonWorkedCode(value) {
-  const p = parseCellValue(value);
-  return p.type === "code" && RH_CODES.includes(p.code);
-}
-
-function getWorkedMinutesForRow(row, dayKeys) {
-  return dayKeys.reduce((sum, d) => sum + getCellWorkedMinutes(getRowDayValue(row, d)), 0);
-}
-
-function makeShiftCellFromLib(shift) {
-  return buildShiftCellValue(shift.start, shift.end);
-}
-
-function shiftToCellString(shift) {
-  return buildShiftCellValue(shift.start, shift.end);
-}
-
-/**
- * Score simplifié pour prioriser les shifts à poser sur un gap:
- * - favorise shift long
- * - favorise libellés "Matin/Journée/Fermeture" si présents
- */
-function scoreShiftForGap(shift) {
-  const label = String(shift?.label || "").toLowerCase();
-  let score = 0;
-  const duration = Math.max(0, Number(shift?.durationMinutes || 0));
-  score += duration;
-
-  if (label.includes("journ")) score += 30;
-  if (label.includes("matin")) score += 20;
-  if (label.includes("ferm")) score += 20;
 
   return score;
 }
 
-function enrichShiftLibrary(shiftLibrary) {
-  return (shiftLibrary || []).map((s) => ({
-    ...s,
-    durationMinutes:
-      typeof s.durationMinutes === "number"
-        ? s.durationMinutes
-        : getCellWorkedMinutes(shiftToCellString(s)),
-  }));
+function getTemplatesForRow(row, allTemplates, targetAddMinutes) {
+  const role = normalizeRole(row?.role);
+  const candidates = allTemplates.filter((t) => !t.roles || t.roles.includes(role));
+
+  // tri pour coller à l'écart à combler
+  return [...candidates].sort((a, b) => {
+    const da = Math.abs((a.minutes || 0) - targetAddMinutes);
+    const db = Math.abs((b.minutes || 0) - targetAddMinutes);
+    return da - db;
+  });
 }
 
-/* -------------------------------------------------------
- * Coverage computation (simple)
- * ----------------------------------------------------- */
-
-/**
- * Compte le nombre de personnes "travaillant" par jour
- * (toute cellule avec shift > 0 min)
- */
-function computeWorkedHeadcountByDay(rows, dayKeys) {
-  const out = {};
-  for (const d of dayKeys) out[d] = 0;
-
-  for (const row of rows || []) {
-    for (const d of dayKeys) {
-      const v = getRowDayValue(row, d);
-      if (isWorkedShiftCell(v)) out[d] += 1;
-    }
-  }
-  return out;
+function isCellEligibleForReplacement(cell) {
+  const d = parseShiftCellDetailed(cell);
+  return d.isWork;
 }
 
-function computeCoverageGaps(rows, options = {}) {
-  const dayKeys = getDayKeysFromOptions(options);
-  const minCoverageByDay = getMinCoverageByDay(options);
-  const workedCountByDay = computeWorkedHeadcountByDay(rows, dayKeys);
+function generateShorterCandidates(currentCell, templatesForRow) {
+  const curMin = parseShiftToMinutes(currentCell);
+  return templatesForRow
+    .filter((t) => t.minutes < curMin)
+    .sort((a, b) => b.minutes - a.minutes); // on raccourcit progressivement
+}
 
-  const gaps = {};
-  for (const d of dayKeys) {
-    const min = Number(minCoverageByDay[d] || 0);
-    const cur = Number(workedCountByDay[d] || 0);
-    gaps[d] = Math.max(0, min - cur);
-  }
+function generateLongerCandidates(currentCell, templatesForRow) {
+  const curMin = parseShiftToMinutes(currentCell);
+  return templatesForRow
+    .filter((t) => t.minutes > curMin)
+    .sort((a, b) => a.minutes - b.minutes);
+}
+
+function testPatchAgainstRules(rows, rowIndex, dayKey, nextValue, input, opts) {
+  const res = wouldViolateRulesForCell({
+    rows,
+    rowIndex,
+    dayKey,
+    nextCellValue: nextValue,
+    input,
+    options: opts.rules || {},
+  });
+  return !res.blocked;
+}
+
+function testPatchAgainstAvailability(row, dayKey, nextValue) {
+  return checkAvailabilityForCell(row, dayKey, nextValue).ok;
+}
+
+function applyPatch(rows, patch) {
+  const row = rows.find((r) => r.id === patch.rowId);
+  if (!row) return false;
+  row.cells = { ...(row.cells || {}), [patch.dayKey]: patch.value };
+  return true;
+}
+
+function getRowIndex(rows, rowId) {
+  return rows.findIndex((r) => r.id === rowId);
+}
+
+function buildDiagnosticsSummary(rowsBefore, rowsAfter) {
+  const byStaff = rowsAfter.map((r) => {
+    const before = rowsBefore.find((x) => x.id === r.id);
+    const beforeDelta = rowDeltaMinutes(before || r);
+    const afterDelta = rowDeltaMinutes(r);
+    return {
+      rowId: r.id,
+      staff: r.name || "—",
+      beforeDeltaMinutes: beforeDelta,
+      afterDeltaMinutes: afterDelta,
+      improvedMinutes: Math.abs(beforeDelta) - Math.abs(afterDelta),
+    };
+  });
 
   return {
-    minCoverageByDay,
-    workedCountByDay,
-    gaps,
+    byStaff,
+    totalAbsDeltaBefore: byStaff.reduce((s, x) => s + Math.abs(x.beforeDeltaMinutes), 0),
+    totalAbsDeltaAfter: byStaff.reduce((s, x) => s + Math.abs(x.afterDeltaMinutes), 0),
   };
 }
 
-/* -------------------------------------------------------
- * Candidate selection
- * ----------------------------------------------------- */
+export function autoBalancePlanning(input = {}, options = {}) {
+  const opts = { ...DEFAULT_OPTIONS, ...(options || {}) };
+  const dayKeys = Array.isArray(input?.dayKeysMonStart) ? input.dayKeysMonStart : DAY_KEYS_MON_START;
+  const originalRows = Array.isArray(input?.rows) ? input.rows : [];
+  const rows = cloneRows(originalRows);
+  const templates = getShiftTemplates(input, opts);
+  const patches = [];
 
-function buildStaffBalanceRows(rows, options = {}) {
-  const dayKeys = getDayKeysFromOptions(options);
-
-  return (rows || []).map((row, index) => {
-    const workedMinutes = getWorkedMinutesForRow(row, dayKeys);
-    const contractHours = getRowContractHours(row);
-    const targetMinutes = getContractTargetMinutes(contractHours);
-    const deltaMinutes = workedMinutes - targetMinutes; // negatif = sous-planifié
-
+  if (!rows.length || !templates.length) {
     return {
-      rowIndex: index,
-      rowId: row?.id ?? null,
-      name: getRowName(row),
-      contractHours,
-      targetMinutes,
-      workedMinutes,
-      deltaMinutes,
-      underMinutes: Math.max(0, -deltaMinutes),
-      overMinutes: Math.max(0, deltaMinutes),
-      row,
+      appliedCount: 0,
+      patches: [],
+      rows,
+      diagnostics: { reason: "no_rows_or_templates" },
     };
-  });
-}
-
-function sortUnderPlannedFirst(staffBalances) {
-  return [...staffBalances].sort((a, b) => {
-    if (b.underMinutes !== a.underMinutes) return b.underMinutes - a.underMinutes;
-    return a.name.localeCompare(b.name, "fr");
-  });
-}
-
-/* -------------------------------------------------------
- * Rule wrappers
- * ----------------------------------------------------- */
-
-function checkCanAddShift({ rows, row, dayKey, shift, options }) {
-  // Si la cellule n'est pas vide, on n'ajoute pas
-  const current = getRowDayValue(row, dayKey);
-  if (!isCellEmpty(current)) {
-    return { ok: false, reason: "Cellule non vide" };
   }
 
-  // Règles métier
-  if (typeof canAssignShiftOnDay === "function") {
-    const res = canAssignShiftOnDay({
-      row,
-      rows,
-      dayKey,
-      shift,
-      options,
-    });
-    if (res && res.ok === false) return res;
-  }
+  let analysis = analyzePlanning({ ...input, rows });
+  let patchBudget = Math.max(1, Number(opts.maxPatches) || 60);
 
-  return { ok: true };
-}
+  // ---------- PASS 1 : combler sous-planification (priorité contrat + couverture)
+  const underRows = [...rows]
+    .map((r) => ({ rowId: r.id, delta: rowDeltaMinutes(r) }))
+    .filter((x) => x.delta < -(Number(opts.toleranceMinutes) || 0))
+    .sort((a, b) => a.delta - b.delta); // plus négatif d'abord
 
-function checkCanMoveShift({
-  rows,
-  row,
-  fromDayKey,
-  toDayKey,
-  toShift,
-  options,
-}) {
-  const fromVal = getRowDayValue(row, fromDayKey);
-  if (!isWorkedShiftCell(fromVal)) {
-    return { ok: false, reason: "Pas de shift travaillé à déplacer" };
-  }
+  for (const item of underRows) {
+    if (patchBudget <= 0) break;
 
-  const toVal = getRowDayValue(row, toDayKey);
-  if (!isCellEmpty(toVal)) {
-    return { ok: false, reason: "Jour cible non vide" };
-  }
+    const rowIndex = getRowIndex(rows, item.rowId);
+    if (rowIndex < 0) continue;
+    const row = rows[rowIndex];
 
-  if (typeof canReplaceShiftOnDay === "function") {
-    // compat: on utilise canReplaceShiftOnDay si dispo
-    const res = canReplaceShiftOnDay({
-      row,
-      rows,
-      fromDayKey,
-      toDayKey,
-      nextShift: toShift,
-      options,
-    });
-    if (res && res.ok === false) return res;
-  } else if (typeof canAssignShiftOnDay === "function") {
-    // fallback: on teste juste l'ajout sur le jour cible
-    const res = canAssignShiftOnDay({
-      row,
-      rows,
-      dayKey: toDayKey,
-      shift: toShift,
-      options,
-    });
-    if (res && res.ok === false) return res;
-  }
+    let currentDelta = rowDeltaMinutes(row); // négatif = manque
+    const sortedDays = daySortForUnderplan(row, analysis, dayKeys);
 
-  return { ok: true };
-}
+    for (const dInfo of sortedDays) {
+      if (patchBudget <= 0) break;
+      if (currentDelta >= -(Number(opts.toleranceMinutes) || 0)) break;
 
-/* -------------------------------------------------------
- * Apply simulation actions
- * ----------------------------------------------------- */
+      const { dayKey } = dInfo;
+      const currentCell = row?.cells?.[dayKey] || "";
 
-function applyAddShift(rows, { rowIndex, dayKey, shift }) {
-  const next = clone(rows);
-  const row = next[rowIndex];
-  if (!row) return next;
+      if (!canTouchCell(currentCell, opts)) continue;
 
-  setRowDayValue(row, dayKey, makeShiftCellFromLib(shift));
-  return next;
-}
+      // 1) Si cellule vide / absence -> essayer d'ajouter un shift
+      const currentParsed = parseShiftCellDetailed(currentCell);
+      const wantedAdd = Math.abs(currentDelta);
+      const rowTemplates = getTemplatesForRow(row, templates, wantedAdd)
+        .sort(
+          (a, b) =>
+            scoreTemplateForDayShift(b.value, dayKey, analysis) - scoreTemplateForDayShift(a.value, dayKey, analysis)
+        );
 
-function applyMoveShift(rows, { rowIndex, fromDayKey, toDayKey, shift }) {
-  const next = clone(rows);
-  const row = next[rowIndex];
-  if (!row) return next;
+      if (!currentParsed.isWork) {
+        for (const tpl of rowTemplates) {
+          if (!testPatchAgainstAvailability(row, dayKey, tpl.value)) continue;
+          if (!testPatchAgainstRules(rows, rowIndex, dayKey, tpl.value, input, opts)) continue;
 
-  // enlève le shift source (on met RH par défaut ? non => vide pour rester neutre)
-  setRowDayValue(row, fromDayKey, "");
-  setRowDayValue(row, toDayKey, makeShiftCellFromLib(shift));
-
-  return next;
-}
-
-/* -------------------------------------------------------
- * Main engine
- * ----------------------------------------------------- */
-
-/**
- * @param {Object} args
- * @param {Array}  args.rows - rows du planning (format PlanningRH)
- * @param {Object} args.options
- * @param {Array}  [args.options.dayKeys]
- * @param {Array}  [args.options.shiftLibrary]
- * @param {Object|number} [args.options.minCoverageByDay]
- * @param {number} [args.options.maxActions=10]
- * @param {boolean} [args.options.preferMove=true]
- * @param {boolean} [args.options.allowAdd=true]
- * @param {boolean} [args.options.allowMove=true]
- *
- * @returns {{
- *   ok: boolean,
- *   draftRows: Array,
- *   actions: Array,
- *   before: Object,
- *   after: Object,
- *   logs: string[]
- * }}
- */
-export function autoBalancePlanning({ rows = [], options = {} } = {}) {
-  const dayKeys = getDayKeysFromOptions(options);
-  const shiftLibrary = enrichShiftLibrary(getShiftLibrary(options)).sort(
-    (a, b) => scoreShiftForGap(b) - scoreShiftForGap(a)
-  );
-
-  const maxActions = Math.max(1, Number(options.maxActions) || 10);
-  const preferMove = options.preferMove !== false;
-  const allowAdd = options.allowAdd !== false;
-  const allowMove = options.allowMove !== false;
-
-  let draftRows = clone(rows);
-  const actions = [];
-  const logs = [];
-
-  const beforeCoverage = computeCoverageGaps(draftRows, { ...options, dayKeys });
-  const beforeStaffBalances = buildStaffBalanceRows(draftRows, { ...options, dayKeys });
-
-  for (let step = 0; step < maxActions; step++) {
-    const coverage = computeCoverageGaps(draftRows, { ...options, dayKeys });
-    const gapsByDay = coverage.gaps;
-
-    // jours avec gap > 0, triés du + gros gap au + petit
-    const gapDays = dayKeys
-      .map((d) => ({ dayKey: d, gap: Number(gapsByDay[d] || 0) }))
-      .filter((x) => x.gap > 0)
-      .sort((a, b) => b.gap - a.gap);
-
-    if (gapDays.length === 0) {
-      logs.push("✅ Plus de gap de couverture détecté.");
-      break;
-    }
-
-    const staffBalances = sortUnderPlannedFirst(
-      buildStaffBalanceRows(draftRows, { ...options, dayKeys }).filter((x) => x.underMinutes > 0)
-    );
-
-    if (staffBalances.length === 0) {
-      logs.push("ℹ️ Aucun collaborateur sous-planifié restant.");
-      break;
-    }
-
-    let actionDone = false;
-
-    // on tente de combler chaque gap
-    for (const gapDay of gapDays) {
-      const toDayKey = gapDay.dayKey;
-
-      // priorités: collaborateurs les plus sous-planifiés
-      for (const sb of staffBalances) {
-        const row = sb.row;
-
-        // -----------------------------
-        // 1) MOVE intelligent
-        // -----------------------------
-        if (preferMove && allowMove) {
-          // Cherche un shift déplaçable depuis un jour sans gap (ou moins critique)
-          const candidateFromDays = dayKeys
-            .filter((d) => d !== toDayKey)
-            .map((d) => {
-              const val = getRowDayValue(row, d);
-              const worked = isWorkedShiftCell(val);
-              const dayGap = Number(gapsByDay[d] || 0);
-              return { fromDayKey: d, worked, dayGap, val };
-            })
-            .filter((x) => x.worked)
-            // on préfère déplacer depuis jours sans gap
-            .sort((a, b) => a.dayGap - b.dayGap);
-
-          for (const from of candidateFromDays) {
-            const parsedFrom = parseCellValue(from.val);
-
-            // shift cible = on reprend d'abord le même créneau si valide
-            const moveShiftCandidate =
-              shiftLibrary.find(
-                (s) => s.start === parsedFrom.start && s.end === parsedFrom.end
-              ) || {
-                id: "MOVED_SHIFT",
-                label: "Shift déplacé",
-                start: parsedFrom.start,
-                end: parsedFrom.end,
-                durationMinutes: parsedFrom.workedMinutes || parsedFrom.minutes || 0,
-              };
-
-            const canMove = checkCanMoveShift({
-              rows: draftRows,
-              row,
-              fromDayKey: from.fromDayKey,
-              toDayKey,
-              toShift: moveShiftCandidate,
-              options: { ...options, dayKeys },
-            });
-
-            // éviter de creuser un gap si le jour source est déjà en gap
-            const sourceGap = Number(gapsByDay[from.fromDayKey] || 0);
-            if (sourceGap > 0) continue;
-
-            if (canMove.ok) {
-              draftRows = applyMoveShift(draftRows, {
-                rowIndex: sb.rowIndex,
-                fromDayKey: from.fromDayKey,
-                toDayKey,
-                shift: moveShiftCandidate,
-              });
-
-              actions.push({
-                type: "move-shift",
-                rowIndex: sb.rowIndex,
-                rowId: sb.rowId,
-                staffName: sb.name,
-                fromDayKey: from.fromDayKey,
-                toDayKey,
-                shift: {
-                  start: moveShiftCandidate.start,
-                  end: moveShiftCandidate.end,
-                  label: moveShiftCandidate.label || "",
-                },
-                reason: "Combler un gap de couverture + réduire sous-planification",
-              });
-
-              logs.push(
-                `↔️ ${sb.name}: déplacement ${from.fromDayKey} → ${toDayKey} (${moveShiftCandidate.start}-${moveShiftCandidate.end})`
-              );
-
-              actionDone = true;
-              break;
-            }
-          }
-
-          if (actionDone) break;
-        }
-
-        // -----------------------------
-        // 2) ADD shift sur jour vide
-        // -----------------------------
-        if (allowAdd) {
-          const currentVal = getRowDayValue(row, toDayKey);
-          if (!isCellEmpty(currentVal)) {
-            continue;
-          }
-
-          // Choisit un shift qui rapproche le mieux du delta restant
-          const targetUnder = sb.underMinutes || 0;
-
-          const rankedShifts = [...shiftLibrary].sort((a, b) => {
-            const da = Math.abs((a.durationMinutes || 0) - targetUnder);
-            const db = Math.abs((b.durationMinutes || 0) - targetUnder);
-            if (da !== db) return da - db;
-            return scoreShiftForGap(b) - scoreShiftForGap(a);
-          });
-
-          for (const shift of rankedShifts) {
-            const canAdd = checkCanAddShift({
-              rows: draftRows,
-              row,
-              dayKey: toDayKey,
-              shift,
-              options: { ...options, dayKeys },
-            });
-
-            if (!canAdd.ok) continue;
-
-            draftRows = applyAddShift(draftRows, {
-              rowIndex: sb.rowIndex,
-              dayKey: toDayKey,
-              shift,
-            });
-
-            actions.push({
-              type: "add-shift",
-              rowIndex: sb.rowIndex,
-              rowId: sb.rowId,
-              staffName: sb.name,
-              dayKey: toDayKey,
-              shift: {
-                start: shift.start,
-                end: shift.end,
-                label: shift.label || "",
-              },
-              reason: "Combler un gap de couverture + réduire sous-planification",
-            });
-
-            logs.push(
-              `➕ ${sb.name}: ajout ${toDayKey} (${shift.start}-${shift.end})`
-            );
-
-            actionDone = true;
+          const patch = { rowId: row.id, dayKey, value: tpl.value, reason: "fill_underplan" };
+          if (applyPatch(rows, patch)) {
+            patches.push(patch);
+            patchBudget -= 1;
+            analysis = analyzePlanning({ ...input, rows });
+            currentDelta = rowDeltaMinutes(row);
             break;
           }
+        }
+      } else {
+        // 2) Si déjà un shift, tenter un shift plus long
+        const longer = generateLongerCandidates(currentCell, rowTemplates).sort(
+          (a, b) =>
+            scoreTemplateForDayShift(b.value, dayKey, analysis) - scoreTemplateForDayShift(a.value, dayKey, analysis)
+        );
 
-          if (actionDone) break;
+        for (const tpl of longer) {
+          if (!testPatchAgainstAvailability(row, dayKey, tpl.value)) continue;
+          if (!testPatchAgainstRules(rows, rowIndex, dayKey, tpl.value, input, opts)) continue;
+
+          const before = Math.abs(currentDelta);
+          const afterProjected = Math.abs(currentDelta + (tpl.minutes - parseShiftToMinutes(currentCell)));
+          if (afterProjected >= before) continue;
+
+          const patch = { rowId: row.id, dayKey, value: tpl.value, reason: "extend_underplan" };
+          if (applyPatch(rows, patch)) {
+            patches.push(patch);
+            patchBudget -= 1;
+            analysis = analyzePlanning({ ...input, rows });
+            currentDelta = rowDeltaMinutes(row);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // ---------- PASS 2 : réduire sur-planification (sans trop casser la couverture)
+  const overRows = [...rows]
+    .map((r) => ({ rowId: r.id, delta: rowDeltaMinutes(r) }))
+    .filter((x) => x.delta > (Number(opts.toleranceMinutes) || 0))
+    .sort((a, b) => b.delta - a.delta); // plus positif d'abord
+
+  for (const item of overRows) {
+    if (patchBudget <= 0) break;
+
+    const rowIndex = getRowIndex(rows, item.rowId);
+    if (rowIndex < 0) continue;
+    const row = rows[rowIndex];
+
+    let currentDelta = rowDeltaMinutes(row);
+    if (currentDelta <= (Number(opts.toleranceMinutes) || 0)) continue;
+
+    const roleTemplates = getShiftTemplates(input, opts).filter((t) => {
+      const role = normalizeRole(row?.role);
+      return !t.roles || t.roles.includes(role);
+    });
+
+    // prioriser les jours où la couverture a le moins de déficit
+    const dayCoverageMap = new Map(
+      dayKeys.map((k) => [k, (analysis?.coverageSummary?.byDay?.[k]?.totalGap || 0)])
+    );
+    const workedDays = dayKeys
+      .map((dayKey) => ({
+        dayKey,
+        cell: row?.cells?.[dayKey] || "",
+        gapScore: dayCoverageMap.get(dayKey) || 0,
+      }))
+      .filter((x) => isCellEligibleForReplacement(x.cell))
+      .sort((a, b) => a.gapScore - b.gapScore); // moins critique d'abord
+
+    for (const wd of workedDays) {
+      if (patchBudget <= 0) break;
+      if (currentDelta <= (Number(opts.toleranceMinutes) || 0)) break;
+
+      const { dayKey, cell } = wd;
+      if (!canTouchCell(cell, opts)) continue;
+
+      const shorterCandidates = generateShorterCandidates(cell, roleTemplates);
+      let patched = false;
+
+      for (const tpl of shorterCandidates) {
+        if (!testPatchAgainstAvailability(row, dayKey, tpl.value)) continue;
+        if (!testPatchAgainstRules(rows, rowIndex, dayKey, tpl.value, input, opts)) continue;
+
+        // Éviter d'aggraver trop la couverture si possible
+        if (opts.rebalanceCoverage) {
+          const beforeAnalysis = analysis;
+          const tempRows = cloneRows(rows);
+          const tempRow = tempRows[rowIndex];
+          tempRow.cells[dayKey] = tpl.value;
+          const afterAnalysis = analyzePlanning({ ...input, rows: tempRows });
+
+          const beforeGap = beforeAnalysis?.coverageSummary?.byDay?.[dayKey]?.totalGap || 0;
+          const afterGap = afterAnalysis?.coverageSummary?.byDay?.[dayKey]?.totalGap || 0;
+
+          // tolérance : on évite si on augmente fortement le gap journalier
+          if (afterGap - beforeGap >= 2) {
+            continue;
+          }
+        }
+
+        const curMin = parseShiftToMinutes(cell);
+        const nextDelta = currentDelta - (curMin - tpl.minutes);
+        if (Math.abs(nextDelta) >= Math.abs(currentDelta)) continue;
+
+        const patch = { rowId: row.id, dayKey, value: tpl.value, reason: "reduce_overplan" };
+        if (applyPatch(rows, patch)) {
+          patches.push(patch);
+          patchBudget -= 1;
+          analysis = analyzePlanning({ ...input, rows });
+          currentDelta = rowDeltaMinutes(row);
+          patched = true;
+          break;
         }
       }
 
-      if (actionDone) break;
-    }
+      if (patched) continue;
 
-    if (!actionDone) {
-      logs.push("⛔ Aucune action supplémentaire possible avec les règles actuelles.");
-      break;
+      // Dernier recours : mettre RH/OFF si autorisé
+      if (opts.allowSetRestOnOverplan && canTouchCell(cell, opts)) {
+        const restValue = "OFF";
+        if (testPatchAgainstRules(rows, rowIndex, dayKey, restValue, input, opts)) {
+          const curMin = parseShiftToMinutes(cell);
+          const nextDelta = currentDelta - curMin;
+
+          if (Math.abs(nextDelta) < Math.abs(currentDelta)) {
+            const patch = { rowId: row.id, dayKey, value: restValue, reason: "remove_shift_overplan" };
+            if (applyPatch(rows, patch)) {
+              patches.push(patch);
+              patchBudget -= 1;
+              analysis = analyzePlanning({ ...input, rows });
+              currentDelta = rowDeltaMinutes(row);
+            }
+          }
+        }
+      }
     }
   }
 
-  const afterCoverage = computeCoverageGaps(draftRows, { ...options, dayKeys });
-  const afterStaffBalances = buildStaffBalanceRows(draftRows, { ...options, dayKeys });
-
-  // Optionnel: branchage analyseur si dispo
-  let analyzerBefore = null;
-  let analyzerAfter = null;
-  try {
-    if (typeof computePlanningAnalysis === "function") {
-      analyzerBefore = computePlanningAnalysis({ rows, options: { ...options, dayKeys } });
-      analyzerAfter = computePlanningAnalysis({ rows: draftRows, options: { ...options, dayKeys } });
-    }
-  } catch {
-    // no-op
-  }
-
-  // Optionnel: branchage gap helper si dispo
-  let gapHelperBefore = null;
-  let gapHelperAfter = null;
-  try {
-    if (typeof getCoverageGapsByDay === "function") {
-      gapHelperBefore = getCoverageGapsByDay({ rows, options: { ...options, dayKeys } });
-      gapHelperAfter = getCoverageGapsByDay({ rows: draftRows, options: { ...options, dayKeys } });
-    }
-  } catch {
-    // no-op
-  }
-
-  // Vérification globale des règles (si util dispo)
-  let ruleChecks = [];
-  try {
-    if (typeof evaluateRowAgainstRules === "function") {
-      ruleChecks = (draftRows || []).map((row) => ({
-        name: getRowName(row),
-        result: evaluateRowAgainstRules({ row, rows: draftRows, options: { ...options, dayKeys } }),
-      }));
-    }
-  } catch {
-    // no-op
-  }
+  const diagnostics = buildDiagnosticsSummary(originalRows, rows);
 
   return {
-    ok: true,
-    draftRows,
-    actions,
-    logs,
-
-    before: {
-      coverage: beforeCoverage,
-      staffBalances: beforeStaffBalances,
-      analyzer: analyzerBefore,
-      gapsByDay: gapHelperBefore,
-    },
-
-    after: {
-      coverage: afterCoverage,
-      staffBalances: afterStaffBalances,
-      analyzer: analyzerAfter,
-      gapsByDay: gapHelperAfter,
-    },
-
-    meta: {
-      maxActions,
-      actionsCount: actions.length,
-      usedShiftLibrary: shiftLibrary.map((s) => ({
-        id: s.id,
-        label: s.label,
-        start: s.start,
-        end: s.end,
-        durationMinutes: s.durationMinutes,
-      })),
-      ruleChecks,
-    },
-  };
-}
-
-/* -------------------------------------------------------
- * Generate UI-friendly suggestions only (non destructif)
- * ----------------------------------------------------- */
-
-export function suggestAutoBalanceActions({ rows = [], options = {} } = {}) {
-  const result = autoBalancePlanning({
+    appliedCount: patches.length,
+    patches,
     rows,
-    options: {
-      ...options,
-      // limite légère pour suggestions
-      maxActions: Number(options.maxActions) || 6,
+    updatedRows: rows, // compat
+    diagnostics: {
+      ...diagnostics,
+      remainingPatchBudget: patchBudget,
+      coverageGapsCount: analysis?.summary?.coverageGapsCount || 0,
+      estimatedPayrollCost: analysis?.summary?.estimatedPayrollCost || 0,
     },
-  });
-
-  return {
-    actions: result.actions || [],
-    logs: result.logs || [],
-    before: result.before,
-    after: result.after,
-    summary: {
-      proposed: (result.actions || []).length,
-      gapsBefore:
-        Object.values(result?.before?.coverage?.gaps || {}).reduce((s, n) => s + (Number(n) || 0), 0),
-      gapsAfter:
-        Object.values(result?.after?.coverage?.gaps || {}).reduce((s, n) => s + (Number(n) || 0), 0),
-    },
+    analysisAfter: analysis,
   };
 }
 
-/* -------------------------------------------------------
- * Apply actions to rows (si UI veut appliquer une sélection)
- * ----------------------------------------------------- */
+/* ===========================
+   Aliases rétrocompatibles
+   =========================== */
 
-export function applyAutoBalanceActions(rows = [], actions = []) {
-  let draft = clone(rows);
+export const runAutoBalance = autoBalancePlanning;
+export const balancePlanning = autoBalancePlanning;
+export const computeAutoBalance = autoBalancePlanning;
 
-  for (const a of actions || []) {
-    if (a?.type === "add-shift") {
-      draft = applyAddShift(draft, {
-        rowIndex: a.rowIndex,
-        dayKey: a.dayKey,
-        shift: a.shift,
-      });
-    } else if (a?.type === "move-shift") {
-      draft = applyMoveShift(draft, {
-        rowIndex: a.rowIndex,
-        fromDayKey: a.fromDayKey,
-        toDayKey: a.toDayKey,
-        shift: a.shift,
-      });
-    }
-  }
-
-  return draft;
-}
+export default autoBalancePlanning;
