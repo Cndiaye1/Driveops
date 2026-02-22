@@ -33,6 +33,9 @@ export default function App() {
   const goAdmin = useDriveStore((s) => s.goAdmin);
   const goCockpit = useDriveStore((s) => s.goCockpit);
 
+  // ✅ IMPORTANT : moteur de synchro temps/blocs/rotation
+  const tick = useDriveStore((s) => s.tick);
+
   const siteCode = useDriveStore((s) => s.siteCode);
 
   const memberRole = useDriveStore((s) => s.memberRole);
@@ -46,7 +49,10 @@ export default function App() {
   // ✅ loading rôle (évite redirection admin trop tôt)
   const [roleLoading, setRoleLoading] = useState(true);
 
-  const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
+  const normalizedSite = useMemo(
+    () => (siteCode || "").trim().toLowerCase(),
+    [siteCode]
+  );
 
   const refreshMemberRole = useCallback(
     async (sess, site) => {
@@ -124,8 +130,6 @@ export default function App() {
     if (booting) return;
     const targetHash = screenToHash(screen);
     if (window.location.hash !== targetHash) {
-      // replaceState = évite de polluer l’historique si tu veux
-      // mais hash = OK aussi. Je mets assign via hash (simple + stable).
       window.location.hash = targetHash;
     }
   }, [booting, screen]);
@@ -170,6 +174,24 @@ export default function App() {
     if (booting) return;
     if (screen === "admin" && !roleLoading && memberRole !== "admin") goSetup?.();
   }, [booting, screen, memberRole, roleLoading, goSetup]);
+
+  // ------------------------
+  // 6) ✅ Tick global (synchro blocs/rotation en temps réel)
+  // - Fait un tick immédiat quand on entre dans le cockpit
+  // - Puis tick périodique
+  useEffect(() => {
+    if (booting) return;
+    if (!session) return;
+
+    // tick immédiat pour recaler instantanément le bloc si sync cochée
+    tick?.();
+
+    const id = window.setInterval(() => {
+      tick?.();
+    }, 1000);
+
+    return () => window.clearInterval(id);
+  }, [booting, session, screen, tick]);
 
   // ------------------------
   // Render
