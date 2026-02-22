@@ -33,7 +33,7 @@ export default function App() {
   const goAdmin = useDriveStore((s) => s.goAdmin);
   const goCockpit = useDriveStore((s) => s.goCockpit);
 
-  // ✅ IMPORTANT : moteur de synchro temps/blocs/rotation
+  // ✅ IMPORTANT : tick global (rotation + sync bloc heure PC)
   const tick = useDriveStore((s) => s.tick);
 
   const siteCode = useDriveStore((s) => s.siteCode);
@@ -49,10 +49,7 @@ export default function App() {
   // ✅ loading rôle (évite redirection admin trop tôt)
   const [roleLoading, setRoleLoading] = useState(true);
 
-  const normalizedSite = useMemo(
-    () => (siteCode || "").trim().toLowerCase(),
-    [siteCode]
-  );
+  const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
 
   const refreshMemberRole = useCallback(
     async (sess, site) => {
@@ -156,7 +153,35 @@ export default function App() {
   }, [booting, session?.user?.id, normalizedSite, refreshMemberRole]);
 
   // ------------------------
-  // 5) Garde-fous
+  // 5) Tick global (IMPORTANT)
+  // Permet :
+  // - synchro des blocs sur l'heure PC (si option cochée)
+  // - rotation imminente / lock
+  useEffect(() => {
+    if (booting) return;
+    if (!session) return;
+
+    // ✅ tick immédiat (utile quand on démarre le service)
+    tick?.();
+
+    const id = window.setInterval(() => {
+      tick?.();
+    }, 1000);
+
+    return () => window.clearInterval(id);
+  }, [booting, session, tick]);
+
+  // ✅ tick immédiat lors du passage vers cockpit (double sécurité)
+  useEffect(() => {
+    if (booting) return;
+    if (!session) return;
+    if (screen === "cockpit") {
+      tick?.();
+    }
+  }, [booting, session, screen, tick]);
+
+  // ------------------------
+  // 6) Garde-fous
   // Si connecté mais écran pin => setup
   useEffect(() => {
     if (booting) return;
@@ -174,24 +199,6 @@ export default function App() {
     if (booting) return;
     if (screen === "admin" && !roleLoading && memberRole !== "admin") goSetup?.();
   }, [booting, screen, memberRole, roleLoading, goSetup]);
-
-  // ------------------------
-  // 6) ✅ Tick global (synchro blocs/rotation en temps réel)
-  // - Fait un tick immédiat quand on entre dans le cockpit
-  // - Puis tick périodique
-  useEffect(() => {
-    if (booting) return;
-    if (!session) return;
-
-    // tick immédiat pour recaler instantanément le bloc si sync cochée
-    tick?.();
-
-    const id = window.setInterval(() => {
-      tick?.();
-    }, 1000);
-
-    return () => window.clearInterval(id);
-  }, [booting, session, screen, tick]);
 
   // ------------------------
   // Render
