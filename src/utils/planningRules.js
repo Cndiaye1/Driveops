@@ -605,4 +605,103 @@ export const checkPlanningRules = evaluatePlanningRules;
 export const runPlanningRules = evaluatePlanningRules;
 export const validatePlanningRules = evaluatePlanningRules;
 
+/* ===========================
+   Aliases rétrocompatibles (legacy imports)
+   =========================== */
+
+// Legacy parse helpers (PlanningRH / anciennes branches)
+export const parseCell = parseShiftCellDetailed;
+export const getCellDetails = parseShiftCellDetailed;
+export const defaultParseShiftCellDetailed = parseShiftCellDetailed;
+
+// Legacy helpers attendus par anciennes versions d'autoBalance
+export function canAssignShiftOnDay({
+  rows = [],
+  rowIndex,
+  dayKey,
+  nextCellValue,
+  input = {},
+  options = {},
+} = {}) {
+  const res = wouldViolateRulesForCell({
+    rows,
+    rowIndex,
+    dayKey,
+    nextCellValue,
+    input,
+    options,
+  });
+
+  const row = rows?.[rowIndex];
+  const av = checkAvailabilityForCell(row, dayKey, nextCellValue);
+
+  return {
+    ok: !res.blocked && av.ok,
+    blocked: res.blocked || !av.ok,
+    violations: res.violations || [],
+    blockingViolations: res.blockingViolations || [],
+    availability: av,
+    reason: !av.ok ? av.reason : res.blocked ? "Règle RH bloquante" : "",
+  };
+}
+
+export function canReplaceShiftOnDay({
+  rows = [],
+  rowIndex,
+  dayKey,
+  nextCellValue,
+  input = {},
+  options = {},
+} = {}) {
+  // même logique que assign dans ce modèle (1 cellule/jour = remplacement)
+  return canAssignShiftOnDay({
+    rows,
+    rowIndex,
+    dayKey,
+    nextCellValue,
+    input,
+    options,
+  });
+}
+
+export function evaluateRowAgainstRules({
+  row,
+  rowIndex = 0,
+  input = {},
+  options = {},
+} = {}) {
+  const rows = Array.isArray(input?.rows)
+    ? input.rows
+    : row
+    ? [row]
+    : [];
+
+  const safeIndex = rows.length ? Math.max(0, Math.min(rowIndex, rows.length - 1)) : 0;
+
+  const res = evaluatePlanningRules(
+    {
+      ...input,
+      rows,
+    },
+    options
+  );
+
+  const targetRow = rows[safeIndex];
+  const rowId = targetRow?.id;
+
+  const violations = rowId
+    ? (res?.violations || []).filter((v) => v.rowId === rowId)
+    : res?.violations || [];
+
+  const warnings = rowId
+    ? (res?.warnings || []).filter((w) => w.rowId === rowId)
+    : res?.warnings || [];
+
+  return {
+    ok: !violations.some((v) => v.severity === "high"),
+    violations,
+    warnings,
+  };
+}
+
 export default evaluatePlanningRules;
