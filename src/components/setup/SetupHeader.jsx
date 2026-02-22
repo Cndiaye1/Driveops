@@ -96,11 +96,11 @@ export default function SetupHeader({
           />
         </div>
 
-        {/* ✅ Planning RH toujours accessible depuis Setup */}
+        {/* ✅ Planning RH (toujours accessible) */}
         <button
           className="btn ghost"
           onClick={goToPlanning}
-          title="Ouvrir le planning RH hebdomadaire"
+          title="Ouvrir le planning RH"
           style={ui.btnGhost}
           type="button"
         >

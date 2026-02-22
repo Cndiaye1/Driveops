@@ -5,16 +5,16 @@ import { useDriveStore } from "./store/useDriveStore";
 
 import Setup from "./components/Setup";
 import Cockpit from "./components/Cockpit";
+import PlanningRH from "./pages/PlanningRH";
 import PinLogin from "./pages/PinLogin";
 import Admin from "./pages/Admin";
-import PlanningRH from "./pages/PlanningRH"; // ✅ ajuste le chemin si ton fichier est ailleurs
 
 // ------------------------
 // Hash routing (stable sur Vercel sans rewrite)
 //   #/           -> setup
 //   #/cockpit    -> cockpit
-//   #/admin      -> admin
 //   #/planning   -> planning
+//   #/admin      -> admin
 function hashToScreen(hash) {
   const h = String(hash || "").trim().toLowerCase();
 
@@ -37,7 +37,7 @@ export default function App() {
   const goSetup = useDriveStore((s) => s.goSetup);
   const goAdmin = useDriveStore((s) => s.goAdmin);
   const goCockpit = useDriveStore((s) => s.goCockpit);
-  const goPlanning = useDriveStore((s) => s.goPlanning); // ✅ NEW
+  const goPlanning = useDriveStore((s) => s.goPlanning); // ✅ nouveau
 
   const siteCode = useDriveStore((s) => s.siteCode);
 
@@ -52,10 +52,7 @@ export default function App() {
   // ✅ loading rôle (évite redirection admin trop tôt)
   const [roleLoading, setRoleLoading] = useState(true);
 
-  const normalizedSite = useMemo(
-    () => (siteCode || "").trim().toLowerCase(),
-    [siteCode]
-  );
+  const normalizedSite = useMemo(() => (siteCode || "").trim().toLowerCase(), [siteCode]);
 
   const refreshMemberRole = useCallback(
     async (sess, site) => {
@@ -115,10 +112,15 @@ export default function App() {
     const syncFromHash = () => {
       const wanted = hashToScreen(window.location.hash);
 
-      if (wanted === "admin") goAdmin?.();
-      else if (wanted === "planning") goPlanning?.(); // ✅ NEW
-      else if (wanted === "cockpit") goCockpit?.();
-      else goSetup?.();
+      if (wanted === "admin") {
+        goAdmin?.();
+      } else if (wanted === "planning") {
+        goPlanning?.();
+      } else if (wanted === "cockpit") {
+        goCockpit?.();
+      } else {
+        goSetup?.();
+      }
     };
 
     // first sync
@@ -168,7 +170,7 @@ export default function App() {
     if (session && screen === "pin") goSetup?.();
   }, [booting, session, screen, goSetup]);
 
-  // Si connecté mais pas de site => setup
+  // Si connecté mais pas de site => setup (sauf setup lui-même)
   useEffect(() => {
     if (booting) return;
     if (session && !normalizedSite && screen !== "setup") goSetup?.();
@@ -177,9 +179,7 @@ export default function App() {
   // Garde-fou admin (uniquement quand roleLoading est fini)
   useEffect(() => {
     if (booting) return;
-    if (screen === "admin" && !roleLoading && memberRole !== "admin") {
-      goSetup?.();
-    }
+    if (screen === "admin" && !roleLoading && memberRole !== "admin") goSetup?.();
   }, [booting, screen, memberRole, roleLoading, goSetup]);
 
   // ------------------------
@@ -195,7 +195,7 @@ export default function App() {
   };
 
   if (screen === "admin") return <Admin />;
-  if (screen === "planning") return <PlanningRH />; // ✅ NEW
+  if (screen === "planning") return <PlanningRH />;
   if (screen === "cockpit") return <Cockpit />;
 
   return <Setup adminState={adminState} />;
