@@ -7,26 +7,27 @@ import Setup from "./components/Setup";
 import Cockpit from "./components/Cockpit";
 import PinLogin from "./pages/PinLogin";
 import Admin from "./pages/Admin";
-import PlanningRH from "./pages/PlanningRH"; // ✅ nouveau module RH
+import PlanningRH from "./pages/PlanningRH"; // ✅ ajuste le chemin si ton fichier est ailleurs
 
 // ------------------------
 // Hash routing (stable sur Vercel sans rewrite)
 //   #/           -> setup
 //   #/cockpit    -> cockpit
 //   #/admin      -> admin
-//   #/planning   -> planning RH
+//   #/planning   -> planning
 function hashToScreen(hash) {
-  const h = String(hash || "").trim();
+  const h = String(hash || "").trim().toLowerCase();
+
   if (h.startsWith("#/admin")) return "admin";
-  if (h.startsWith("#/cockpit")) return "cockpit";
   if (h.startsWith("#/planning")) return "planning";
+  if (h.startsWith("#/cockpit")) return "cockpit";
   return "setup";
 }
 
 function screenToHash(screen) {
   if (screen === "admin") return "#/admin";
-  if (screen === "cockpit") return "#/cockpit";
   if (screen === "planning") return "#/planning";
+  if (screen === "cockpit") return "#/cockpit";
   return "#/";
 }
 
@@ -36,9 +37,7 @@ export default function App() {
   const goSetup = useDriveStore((s) => s.goSetup);
   const goAdmin = useDriveStore((s) => s.goAdmin);
   const goCockpit = useDriveStore((s) => s.goCockpit);
-
-  // ✅ goPlanning peut ne pas exister encore dans le store => fallback safe
-  const goPlanningFromStore = useDriveStore((s) => s.goPlanning);
+  const goPlanning = useDriveStore((s) => s.goPlanning); // ✅ NEW
 
   const siteCode = useDriveStore((s) => s.siteCode);
 
@@ -57,16 +56,6 @@ export default function App() {
     () => (siteCode || "").trim().toLowerCase(),
     [siteCode]
   );
-
-  // ✅ fallback navigation planning si le store n'a pas encore goPlanning()
-  const goPlanning = useCallback(() => {
-    if (typeof goPlanningFromStore === "function") {
-      goPlanningFromStore();
-      return;
-    }
-    // fallback sans casser le store
-    useDriveStore.setState((prev) => ({ ...prev, screen: "planning" }));
-  }, [goPlanningFromStore]);
 
   const refreshMemberRole = useCallback(
     async (sess, site) => {
@@ -127,8 +116,8 @@ export default function App() {
       const wanted = hashToScreen(window.location.hash);
 
       if (wanted === "admin") goAdmin?.();
+      else if (wanted === "planning") goPlanning?.(); // ✅ NEW
       else if (wanted === "cockpit") goCockpit?.();
-      else if (wanted === "planning") goPlanning?.();
       else goSetup?.();
     };
 
@@ -138,7 +127,7 @@ export default function App() {
     // listen changes (navigation + back/forward)
     window.addEventListener("hashchange", syncFromHash);
     return () => window.removeEventListener("hashchange", syncFromHash);
-  }, [booting, goAdmin, goCockpit, goPlanning, goSetup]);
+  }, [booting, goAdmin, goPlanning, goCockpit, goSetup]);
 
   // ------------------------
   // 3) Sync screen -> URL(hash) (quand tu cliques sur les boutons)
@@ -193,19 +182,6 @@ export default function App() {
     }
   }, [booting, screen, memberRole, roleLoading, goSetup]);
 
-  // ✅ Optionnel : si tu veux réserver planning RH à admin/manager seulement
-  // (décommente si besoin)
-  // useEffect(() => {
-  //   if (booting) return;
-  //   if (
-  //     screen === "planning" &&
-  //     !roleLoading &&
-  //     !["admin", "manager"].includes(String(memberRole || "").toLowerCase())
-  //   ) {
-  //     goSetup?.();
-  //   }
-  // }, [booting, screen, memberRole, roleLoading, goSetup]);
-
   // ------------------------
   // Render
   if (booting) return <div style={{ padding: 16 }}>Chargement…</div>;
@@ -219,8 +195,8 @@ export default function App() {
   };
 
   if (screen === "admin") return <Admin />;
+  if (screen === "planning") return <PlanningRH />; // ✅ NEW
   if (screen === "cockpit") return <Cockpit />;
-  if (screen === "planning") return <PlanningRH adminState={adminState} />; // ✅ nouvelle page
 
   return <Setup adminState={adminState} />;
 }
