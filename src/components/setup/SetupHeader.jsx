@@ -1,4 +1,3 @@
-// src/components/setup/SetupHeader.jsx
 import React from "react";
 
 export default function SetupHeader({
@@ -96,11 +95,11 @@ export default function SetupHeader({
           />
         </div>
 
-        {/* ✅ Planning RH (toujours accessible) */}
+        {/* ✅ NEW: bouton Planning RH (toujours visible depuis Setup) */}
         <button
           className="btn ghost"
           onClick={goToPlanning}
-          title="Ouvrir le planning RH"
+          title="Aller au planning RH"
           style={ui.btnGhost}
           type="button"
         >
