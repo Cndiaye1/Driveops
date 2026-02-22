@@ -8,9 +8,18 @@ import { supabase } from "../services/supabaseClient";
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
+
+// ✅ FIX IMPORTANT : date locale (pas UTC)
+// Évite les décalages qui cassent la condition:
+// s.dayDate === todayISO() quand "Sync sur l’heure du PC" est cochée
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
+
 function timeToMinutes(hhmm) {
   const [h, m] = String(hhmm || "").split(":").map(Number);
   return (Number(h) || 0) * 60 + (Number(m) || 0);
@@ -657,7 +666,7 @@ export const useDriveStore = create(
           if (st._pendingSave) doSessionSaveNow();
           if (st._cfgPendingSave) doCfgSaveNow();
         });
-      };
+      }
 
       // ---------------- Site Config Hydrate
       const hydrateSiteConfig = async (siteCode) => {
@@ -1130,12 +1139,10 @@ export const useDriveStore = create(
             const blocks = buildBlocks(s.horaires, s.rotationMinutes);
             const firstDefault = blocks[0]?.id ?? getFirstBlockId(s.horaires, s.rotationMinutes);
 
-            // ✅ CORRECTION: si la sync est cochée, on synchronise sur l'heure réelle
-            // (même si dayDate n'est pas exactement aujourd'hui côté setup)
-            const shouldSyncNow = !!s.syncBlocksToSystemClock;
+            const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
 
             const now = new Date();
-            const sysStartMin = shouldSyncNow ? getBlockStartMinForNow(s.horaires, s.rotationMinutes, now) : null;
+            const sysStartMin = shouldSyncToday ? getBlockStartMinForNow(s.horaires, s.rotationMinutes, now) : null;
             const first = sysStartMin != null ? String(sysStartMin) : firstDefault;
 
             const assignments = { ...s.assignments };
@@ -1154,9 +1161,7 @@ export const useDriveStore = create(
             s.dayStaff.forEach((n) => (pauseTakenAt[normalizeName(n)] = pauseTakenAt[normalizeName(n)] ?? null));
 
             const nowMs = Date.now();
-            const blockStartedAt = sysStartMin != null
-              ? blockStartTimestamp(s.dayDate, sysStartMin, true)
-              : nowMs;
+            const blockStartedAt = sysStartMin != null ? blockStartTimestamp(s.dayDate, sysStartMin, true) : nowMs;
 
             const skipRotation = { ...(s.skipRotation || {}) };
             if (!skipRotation[first]) skipRotation[first] = {};
@@ -1211,11 +1216,9 @@ export const useDriveStore = create(
           if (!serviceOn) return;
 
           const currentId = normalizeBlockId(s.currentBlockId, s.horaires);
+          const shouldSyncToday = !!(s.syncBlocksToSystemClock && s.dayDate === todayISO());
 
-          // ✅ CORRECTION: sync réelle dès lors que la case est cochée
-          const shouldSyncNow = !!s.syncBlocksToSystemClock;
-
-          if (shouldSyncNow) {
+          if (shouldSyncToday) {
             const now = new Date();
             const sysStartMin = getBlockStartMinForNow(s.horaires, s.rotationMinutes, now);
 
