@@ -1,13 +1,14 @@
+// src/components/PlanningRH.jsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "../services/supabaseClient";
 import { useDriveStore } from "../store/useDriveStore";
 
 /* =========================================================
-   PlanningRH v1 (DriveOps) + PRINT 1
+   PlanningRH v2 (DriveOps)
    - Semaine RH (stockage = lundi)
    - Affichage grille = Dimanche -> Samedi (terrain)
    - Supabase-ready + fallback localStorage
-   - Impression A4 paysage (version compacte / murale)
+   - PRINT v2 : A4 paysage compact + lisibilité murale
    ========================================================= */
 
 const ABSENCE_CODES = ["RH", "CP", "OFF", "AT", "MAL", "ABS"];
@@ -189,7 +190,7 @@ function makePlanningDoc({ siteCode, weekStartMonday, rows = [] }) {
     weekStartMonday,
     rows,
     updatedAt: new Date().toISOString(),
-    version: 1,
+    version: 2, // v2 print
   };
 }
 
@@ -227,11 +228,29 @@ async function savePlanningRemote(siteCode, weekStartMonday, dataJson) {
   if (error) throw error;
 }
 
+// ---------- PRINT v2 helpers
+function getPrintDensity(rowsCount) {
+  // Ajustement simple mais efficace pour impression A4 paysage
+  if (rowsCount <= 12) return "comfortable";
+  if (rowsCount <= 20) return "compact";
+  return "dense";
+}
+
+function getPrintScale(rowsCount) {
+  // pseudo auto-fit (raisonnable sans casser la lisibilité)
+  if (rowsCount <= 12) return 1;
+  if (rowsCount <= 18) return 0.96;
+  if (rowsCount <= 24) return 0.92;
+  if (rowsCount <= 30) return 0.88;
+  return 0.84;
+}
+
 export default function PlanningRH({ adminState }) {
   const siteCode = useDriveStore((s) => s.siteCode);
   const preparateursList = useDriveStore((s) => s.preparateursList || []);
   const coordosList = useDriveStore((s) => s.coordosList || []);
 
+  const screen = useDriveStore((s) => s.screen);
   const goSetup = useDriveStore((s) => s.goSetup);
   const goCockpit = useDriveStore((s) => s.goCockpit);
 
@@ -259,6 +278,9 @@ export default function PlanningRH({ adminState }) {
   const [showOnlyDiff, setShowOnlyDiff] = useState(false);
   const [autoAddFromDriveOpsDone, setAutoAddFromDriveOpsDone] = useState(false);
 
+  // print ui
+  const [printCompactNotes, setPrintCompactNotes] = useState(true);
+
   const normalizedSite = useMemo(
     () => String(siteCode || "").trim().toLowerCase(),
     [siteCode]
@@ -269,6 +291,7 @@ export default function PlanningRH({ adminState }) {
     [weekStartMonday]
   );
 
+  // map clé jour -> label date (ordre UI)
   const displayDayMeta = useMemo(() => {
     return DAY_KEYS_UI_ORDER.map((k, idx) => ({
       key: k,
@@ -277,10 +300,6 @@ export default function PlanningRH({ adminState }) {
       dateLabel: formatFrShort(displayWeekDates[idx]),
     }));
   }, [displayWeekDates]);
-
-  const printGeneratedAt = useMemo(() => {
-    return new Date().toLocaleString("fr-FR");
-  }, [doc.updatedAt, weekStartMonday]);
 
   // ---------- load (Supabase -> fallback local)
   const loadWeek = useCallback(async () => {
@@ -307,6 +326,7 @@ export default function PlanningRH({ adminState }) {
           };
         }
       } catch (e) {
+        // fallback local si table n'existe pas encore / RLS pas prêt
         console.warn("[PlanningRH] remote load fallback local:", e?.message || e);
       }
 
@@ -335,6 +355,7 @@ export default function PlanningRH({ adminState }) {
         });
       }
 
+      // sécurité schema
       loaded.rows = Array.isArray(loaded.rows)
         ? loaded.rows.map((r) => ({
             id: r.id || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())),
@@ -357,7 +378,7 @@ export default function PlanningRH({ adminState }) {
     loadWeek();
   }, [loadWeek]);
 
-  // ---------- auto-ajout collaborateurs depuis DriveOps
+  // ---------- auto-ajout collaborateurs depuis DriveOps (1 fois après load)
   useEffect(() => {
     if (loading) return;
     if (autoAddFromDriveOpsDone) return;
@@ -394,14 +415,16 @@ export default function PlanningRH({ adminState }) {
     setAutoAddFromDriveOpsDone(true);
   }, [loading, autoAddFromDriveOpsDone, doc?.rows, preparateursList, coordosList]);
 
+  // reset auto-merge flag when week changes
   useEffect(() => {
     setAutoAddFromDriveOpsDone(false);
   }, [weekStartMonday, normalizedSite]);
 
-  // ---------- autosave
+  // ---------- autosave (local immédiat + remote debounce)
   useEffect(() => {
     if (!doc || !normalizedSite || !weekStartMonday) return;
 
+    // local backup
     try {
       localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
     } catch {}
@@ -419,6 +442,8 @@ export default function PlanningRH({ adminState }) {
           setSaveStatus("offline");
           setSaveError("Sauvegarde locale OK (Supabase non disponible / table non prête).");
         }
+      } catch {
+        setSaveStatus("error");
       } finally {
         setSaving(false);
       }
@@ -519,11 +544,14 @@ export default function PlanningRH({ adminState }) {
     [selectedRowId, selectedDayKey, setCell]
   );
 
-  const handlePrint = useCallback(() => {
+  const handlePrintV2 = useCallback(() => {
     try {
+      document.body.classList.add("planning-print-v2");
       window.print();
-    } catch (e) {
-      console.error(e);
+    } finally {
+      setTimeout(() => {
+        document.body.classList.remove("planning-print-v2");
+      }, 300);
     }
   }, []);
 
@@ -561,16 +589,19 @@ export default function PlanningRH({ adminState }) {
     };
   }, [rowsWithStats]);
 
-  // ---------- styles
+  const printDensity = useMemo(() => getPrintDensity(rowsWithStats.length), [rowsWithStats.length]);
+  const printScale = useMemo(() => getPrintScale(rowsWithStats.length), [rowsWithStats.length]);
+
+  // ---------- style inline minimal (cohérent Cockpit)
   const ui = {
     page: {
-      maxWidth: 1440,
-      margin: "20px auto",
-      padding: "0 14px",
+      maxWidth: 1400,
+      margin: "24px auto",
+      padding: "0 16px",
       color: "#e8eefc",
       display: "flex",
       flexDirection: "column",
-      gap: 14,
+      gap: 16,
     },
     card: {
       border: "1px solid rgba(255,255,255,0.10)",
@@ -603,14 +634,14 @@ export default function PlanningRH({ adminState }) {
       whiteSpace: "nowrap",
     },
     btnPrint: {
-      background: "linear-gradient(180deg, #2563eb, #1d4ed8)",
+      background: "linear-gradient(180deg, #3b82f6, #2563eb)",
       color: "#fff",
       border: "1px solid rgba(255,255,255,0.12)",
       borderRadius: 10,
       padding: "9px 12px",
       cursor: "pointer",
       fontWeight: 700,
-      boxShadow: "0 8px 18px rgba(37,99,235,0.25)",
+      boxShadow: "0 8px 18px rgba(37,99,235,0.22)",
       whiteSpace: "nowrap",
     },
     input: {
@@ -629,14 +660,14 @@ export default function PlanningRH({ adminState }) {
       zIndex: 2,
       background: "rgba(9,14,28,0.95)",
       borderBottom: "1px solid rgba(255,255,255,0.10)",
-      padding: "8px 6px",
+      padding: "10px 8px",
       textAlign: "center",
-      fontSize: 12,
+      fontSize: 13,
       whiteSpace: "nowrap",
     },
     td: {
       borderBottom: "1px solid rgba(255,255,255,0.06)",
-      padding: "5px",
+      padding: "6px",
       verticalAlign: "middle",
     },
   };
@@ -644,14 +675,20 @@ export default function PlanningRH({ adminState }) {
   const statusBadge = useMemo(() => {
     if (saving) return { text: "Sauvegarde…", tone: "#fcd34d" };
     if (saveStatus === "saved") return { text: "Sauvegardé", tone: "#86efac" };
-    if (saveStatus === "offline") return { text: "Local seulement", tone: "#fbbf24" };
+    if (saveStatus === "offline")
+      return { text: "Local seulement", tone: "#fbbf24" };
     if (saveStatus === "error") return { text: "Erreur", tone: "#fca5a5" };
     return { text: "Prêt", tone: "#cbd5e1" };
   }, [saving, saveStatus]);
 
   return (
-    <div style={ui.page} className="planning-rh-page">
-      {/* PRINT CSS (local au composant) */}
+    <div
+      style={ui.page}
+      className={`planning-rh-page planning-print-density-${printDensity}`}
+      data-print-density={printDensity}
+      data-print-scale={String(printScale)}
+    >
+      {/* PRINT CSS v2 (local au composant) */}
       <style>{`
         @page {
           size: A4 landscape;
@@ -666,213 +703,171 @@ export default function PlanningRH({ adminState }) {
             print-color-adjust: exact;
           }
 
-          body * {
-            visibility: hidden;
+          body.planning-print-v2 * {
+            box-shadow: none !important;
           }
 
-          .planning-rh-page, .planning-rh-page * {
-            visibility: visible;
-          }
-
-          .planning-rh-page {
+          body.planning-print-v2 .planning-rh-page {
             max-width: none !important;
             margin: 0 !important;
             padding: 0 !important;
             gap: 6px !important;
             color: #000 !important;
+            transform-origin: top left;
           }
 
-          .no-print {
+          body.planning-print-v2 .print-hide {
             display: none !important;
           }
 
-          .print-only {
-            display: block !important;
-          }
-
-          .planning-print-card {
-            border: 1px solid #d1d5db !important;
+          body.planning-print-v2 .print-card {
+            border: 1px solid #bbb !important;
             background: #fff !important;
-            box-shadow: none !important;
             border-radius: 6px !important;
-            padding: 6px 8px !important;
+            padding: 6px !important;
             overflow: visible !important;
           }
 
-          .planning-table-wrap {
+          body.planning-print-v2 .print-grid-wrapper {
             overflow: visible !important;
             max-height: none !important;
           }
 
-          .planning-table {
+          body.planning-print-v2 .print-table {
             width: 100% !important;
             min-width: 0 !important;
-            table-layout: fixed !important;
             border-collapse: collapse !important;
-            font-size: 10px !important;
-          }
-
-          .planning-table thead th {
-            position: static !important;
-            top: auto !important;
-            z-index: auto !important;
-            background: #f3f4f6 !important;
-            color: #000 !important;
-            border: 1px solid #d1d5db !important;
-            padding: 4px 3px !important;
+            table-layout: fixed !important;
             font-size: 9px !important;
-            line-height: 1.15 !important;
           }
 
-          .planning-table td {
-            border: 1px solid #e5e7eb !important;
-            padding: 2px !important;
-            background: #fff !important;
+          body.planning-print-v2 .print-table th,
+          body.planning-print-v2 .print-table td {
+            border: 1px solid #cfcfcf !important;
+            padding: 2px 3px !important;
             color: #000 !important;
+            background: #fff !important;
             vertical-align: middle !important;
           }
 
-          .planning-sticky-col {
+          body.planning-print-v2 .print-table thead th {
+            position: static !important;
+            background: #f3f4f6 !important;
+            z-index: auto !important;
+            font-size: 8.5px !important;
+            line-height: 1.15 !important;
+          }
+
+          body.planning-print-v2 .print-sticky-left {
             position: static !important;
             left: auto !important;
+            background: #fff !important;
             z-index: auto !important;
-            background: #fff !important;
           }
 
-          .planning-input,
-          .planning-cell-input {
-            background: transparent !important;
+          body.planning-print-v2 .print-input,
+          body.planning-print-v2 input,
+          body.planning-print-v2 textarea,
+          body.planning-print-v2 select {
             border: none !important;
-            box-shadow: none !important;
+            background: transparent !important;
             color: #000 !important;
-            padding: 1px 2px !important;
-            border-radius: 0 !important;
-            font-size: 10px !important;
-            line-height: 1.1 !important;
-            text-align: center !important;
-            width: 100% !important;
-          }
-
-          .planning-name-input {
-            text-align: left !important;
-            font-weight: 700 !important;
-          }
-
-          .planning-notes-input {
-            text-align: left !important;
-            font-size: 9px !important;
-          }
-
-          .planning-role-chip {
-            display: none !important;
-          }
-
-          .planning-actions-col,
-          .planning-actions-cell {
-            display: none !important;
-          }
-
-          .planning-kpi-grid {
-            display: grid !important;
-            grid-template-columns: repeat(4, 1fr) !important;
-            gap: 6px !important;
-          }
-
-          .planning-kpi-item {
-            min-width: 0 !important;
-            border-radius: 6px !important;
             box-shadow: none !important;
-            border: 1px solid #d1d5db !important;
-            background: #fff !important;
-            padding: 5px 6px !important;
-          }
-
-          .planning-kpi-item .kpi-label {
+            padding: 0 !important;
+            margin: 0 !important;
             font-size: 9px !important;
-            opacity: 1 !important;
-            color: #374151 !important;
-          }
-
-          .planning-kpi-item .kpi-value {
-            font-size: 11px !important;
-            font-weight: 800 !important;
-            margin-top: 2px !important;
-            color: #000 !important;
-          }
-
-          .planning-print-compact-header {
-            display: grid !important;
-            grid-template-columns: 1.4fr 1fr 1fr;
-            gap: 8px;
-            align-items: start;
-            margin-bottom: 4px;
-            font-size: 10px;
-            color: #111827;
-          }
-
-          .planning-print-compact-header h1 {
-            font-size: 14px !important;
-            margin: 0 0 2px 0 !important;
             line-height: 1.1 !important;
           }
 
-          .planning-print-compact-header .muted {
-            color: #4b5563 !important;
-            font-size: 9px !important;
-          }
-
-          .planning-print-footnote {
+          body.planning-print-v2 .print-header-compact {
             display: block !important;
-            margin-top: 4px !important;
-            font-size: 8px !important;
-            color: #4b5563 !important;
-            text-align: right !important;
           }
 
-          .planning-cell-work { background: rgba(59,130,246,0.08) !important; }
-          .planning-cell-rest { background: rgba(16,185,129,0.08) !important; }
-          .planning-cell-cp { background: rgba(245,158,11,0.08) !important; }
-          .planning-cell-alert { background: rgba(239,68,68,0.08) !important; }
-
-          .planning-col-name { width: 16% !important; }
-          .planning-col-contract { width: 5.5% !important; }
-          .planning-col-day { width: 9.2% !important; }
-          .planning-col-hours { width: 6.5% !important; }
-          .planning-col-delta { width: 6% !important; }
-          .planning-col-notes { width: 9.5% !important; }
-        }
-
-        @media screen {
-          .print-only {
+          body.planning-print-v2 .screen-header {
             display: none !important;
+          }
+
+          body.planning-print-v2 .print-only {
+            display: block !important;
+          }
+
+          body.planning-print-v2 .screen-only {
+            display: none !important;
+          }
+
+          body.planning-print-v2 .print-kpis {
+            display: grid !important;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 4px !important;
+          }
+
+          body.planning-print-v2 .print-kpi-item {
+            border: 1px solid #d4d4d4 !important;
+            border-radius: 4px !important;
+            padding: 4px 6px !important;
+            background: #fff !important;
+          }
+
+          body.planning-print-v2 .print-row-badge {
+            display: none !important;
+          }
+
+          body.planning-print-v2 .print-notes-col-compact {
+            width: 90px !important;
+            max-width: 90px !important;
+          }
+
+          body.planning-print-v2 .print-action-col,
+          body.planning-print-v2 .print-action-cell {
+            display: none !important;
+          }
+
+          body.planning-print-v2 .print-contract-col {
+            width: 42px !important;
+            max-width: 42px !important;
+          }
+
+          body.planning-print-v2 .print-hours-col,
+          body.planning-print-v2 .print-delta-col {
+            width: 52px !important;
+            max-width: 52px !important;
+          }
+
+          body.planning-print-v2 .print-name-col {
+            width: 110px !important;
+            max-width: 110px !important;
+          }
+
+          body.planning-print-v2 .print-day-col {
+            width: 88px !important;
+            max-width: 88px !important;
+          }
+
+          body.planning-print-v2 .print-cell-value {
+            font-weight: 700 !important;
+            text-align: center !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+          }
+
+          body.planning-print-v2 .print-notes-text {
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+          }
+
+          body.planning-print-v2 .planning-rh-page {
+            transform: scale(var(--planning-print-scale, 1));
+            width: calc(100% / var(--planning-print-scale, 1));
           }
         }
       `}</style>
 
       {/* Header écran */}
-      <div style={ui.card} className="planning-print-card">
-        {/* Header impression compact */}
-        <div className="print-only planning-print-compact-header">
-          <div>
-            <h1>Planning RH Drive</h1>
-            <div><b>Site :</b> {normalizedSite || "—"}</div>
-            <div><b>Semaine RH :</b> {formatWeekRangeLabel(weekStartMonday)}</div>
-          </div>
-          <div className="muted">
-            <div><b>Affichage :</b> Dimanche → Samedi</div>
-            <div><b>Stockage :</b> Lundi → Dimanche</div>
-            <div><b>Collaborateurs :</b> {rowsWithStats.length}</div>
-          </div>
-          <div className="muted" style={{ textAlign: "right" }}>
-            <div><b>Édité :</b> {printGeneratedAt}</div>
-            {adminState ? (
-              <div><b>Rôle :</b> {adminState.loading ? "chargement..." : adminState.role || "—"}</div>
-            ) : null}
-          </div>
-        </div>
-
+      <div style={ui.card} className="print-card">
         <div
-          className="no-print"
+          className="screen-header"
           style={{
             display: "flex",
             justifyContent: "space-between",
@@ -927,10 +922,28 @@ export default function PlanningRH({ adminState }) {
               <button style={ui.btn} onClick={clearWeek}>
                 🧹 Vider semaine
               </button>
-              <button style={ui.btnPrint} onClick={handlePrint} title="Impression A4 paysage">
-                🖨️ Imprimer A4
+              <button style={ui.btnPrint} onClick={handlePrintV2} title="Imprimer version murale v2">
+                🖨️ Imprimer
               </button>
             </div>
+
+            <label
+              className="screen-only"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 12,
+                opacity: 0.9,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={printCompactNotes}
+                onChange={(e) => setPrintCompactNotes(e.target.checked)}
+              />
+              Notes compactes en impression
+            </label>
 
             <div
               style={{
@@ -946,13 +959,57 @@ export default function PlanningRH({ adminState }) {
             >
               <span style={{ color: statusBadge.tone }}>●</span>
               <span>{statusBadge.text}</span>
+              <span style={{ opacity: 0.7 }}>• print {printDensity}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Header compact impression */}
+        <div className="print-only print-header-compact" style={{ display: "none" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 4,
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 12 }}>
+              Planning RH Drive — {String(normalizedSite || "—").toUpperCase()}
+            </div>
+            <div style={{ fontSize: 10 }}>
+              {formatWeekRangeLabel(weekStartMonday)}
+            </div>
+          </div>
+
+          <div className="print-kpis">
+            <div className="print-kpi-item">
+              <div style={{ fontSize: 8, opacity: 0.8 }}>Collaborateurs</div>
+              <div style={{ fontWeight: 700 }}>{totals.staff}</div>
+            </div>
+            <div className="print-kpi-item">
+              <div style={{ fontSize: 8, opacity: 0.8 }}>Heures planifiées</div>
+              <div style={{ fontWeight: 700 }}>{minutesToHourLabel(totals.totalPlanned)}</div>
+            </div>
+            <div className="print-kpi-item">
+              <div style={{ fontSize: 8, opacity: 0.8 }}>Heures cibles</div>
+              <div style={{ fontWeight: 700 }}>{minutesToHourLabel(totals.totalTarget)}</div>
+            </div>
+            <div className="print-kpi-item">
+              <div style={{ fontSize: 8, opacity: 0.8 }}>Écart global</div>
+              <div style={{ fontWeight: 700 }}>
+                {totals.diff === 0
+                  ? "OK"
+                  : `${totals.diff > 0 ? "+" : "-"}${minutesToHourLabel(Math.abs(totals.diff))}`}
+              </div>
             </div>
           </div>
         </div>
 
         {saveError ? (
           <div
-            className="no-print"
+            className="print-hide"
             style={{
               marginTop: 10,
               fontSize: 12,
@@ -968,8 +1025,8 @@ export default function PlanningRH({ adminState }) {
         ) : null}
       </div>
 
-      {/* Barre outils (écran seulement) */}
-      <div style={ui.card} className="no-print">
+      {/* Barre outils */}
+      <div style={ui.card} className="print-card print-hide">
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
           <div style={{ minWidth: 220, flex: 1 }}>
             <input
@@ -1005,6 +1062,7 @@ export default function PlanningRH({ adminState }) {
           </button>
         </div>
 
+        {/* Quick shifts */}
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
             🎯 Affectation rapide sur la cellule sélectionnée
@@ -1025,23 +1083,22 @@ export default function PlanningRH({ adminState }) {
         </div>
       </div>
 
-      {/* KPI semaine */}
-      <div style={ui.card} className="planning-print-card">
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }} className="planning-kpi-grid">
+      {/* KPI semaine (écran) */}
+      <div style={ui.card} className="print-card print-hide">
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {[
             ["👥 Collaborateurs", String(totals.staff)],
             ["⏱️ Heures planifiées", minutesToHourLabel(totals.totalPlanned)],
             ["🎯 Heures cibles", minutesToHourLabel(totals.totalTarget)],
             [
               "Δ Écart",
-              `${totals.diff > 0 ? "+" : totals.diff < 0 ? "-" : ""}${minutesToHourLabel(
-                Math.abs(totals.diff)
-              )}${totals.diff < 0 ? " (sous)" : totals.diff > 0 ? " (sur)" : ""}`,
+              `${totals.diff > 0 ? "+" : ""}${minutesToHourLabel(Math.abs(totals.diff))}${
+                totals.diff < 0 ? " (sous)" : totals.diff > 0 ? " (sur)" : ""
+              }`,
             ],
           ].map(([label, value]) => (
             <div
               key={label}
-              className="planning-kpi-item"
               style={{
                 border: "1px solid rgba(255,255,255,0.10)",
                 background: "rgba(255,255,255,0.02)",
@@ -1050,51 +1107,53 @@ export default function PlanningRH({ adminState }) {
                 minWidth: 180,
               }}
             >
-              <div className="kpi-label" style={{ fontSize: 12, opacity: 0.75 }}>
-                {label}
-              </div>
-              <div className="kpi-value" style={{ fontWeight: 800, marginTop: 4 }}>
-                {value}
-              </div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>{label}</div>
+              <div style={{ fontWeight: 800, marginTop: 4 }}>{value}</div>
             </div>
           ))}
         </div>
       </div>
 
       {/* Grille planning */}
-      <div style={{ ...ui.card, padding: 0 }} className="planning-print-card">
-        <div style={{ overflow: "auto", maxHeight: "70vh" }} className="planning-table-wrap">
-          <table className="planning-table" style={{ width: "100%", borderCollapse: "collapse", minWidth: 1160 }}>
+      <div
+        style={{ ...ui.card, padding: 0, "--planning-print-scale": String(printScale) }}
+        className="print-card"
+      >
+        <div style={{ overflow: "auto", maxHeight: "70vh" }} className="print-grid-wrapper">
+          <table className="print-table" style={{ width: "100%", borderCollapse: "collapse", minWidth: 1220 }}>
             <thead>
               <tr>
                 <th
-                  className="planning-col-name"
-                  style={{ ...ui.th, left: 0, zIndex: 3, textAlign: "left", minWidth: 170 }}
+                  className="print-name-col"
+                  style={{ ...ui.th, left: 0, zIndex: 3, textAlign: "left", minWidth: 180 }}
                 >
                   Collaborateur
                 </th>
 
-                <th className="planning-col-contract" style={{ ...ui.th, minWidth: 80 }}>
+                <th className="print-contract-col" style={{ ...ui.th, minWidth: 90 }}>
                   Contrat
                 </th>
 
                 {displayDayMeta.map((d) => (
-                  <th key={d.key} className="planning-col-day" style={{ ...ui.th, minWidth: 125 }}>
+                  <th key={d.key} className="print-day-col" style={{ ...ui.th, minWidth: 140 }}>
                     <div>{d.label}</div>
-                    <div style={{ fontSize: 10, opacity: 0.75 }}>{d.dateLabel}</div>
+                    <div style={{ fontSize: 11, opacity: 0.75 }}>{d.dateLabel}</div>
                   </th>
                 ))}
 
-                <th className="planning-col-hours" style={{ ...ui.th, minWidth: 95 }}>
+                <th className="print-hours-col" style={{ ...ui.th, minWidth: 110 }}>
                   Heures
                 </th>
-                <th className="planning-col-delta" style={{ ...ui.th, minWidth: 95 }}>
+                <th className="print-delta-col" style={{ ...ui.th, minWidth: 110 }}>
                   Écart
                 </th>
-                <th className="planning-col-notes" style={{ ...ui.th, minWidth: 160 }}>
+                <th
+                  className={printCompactNotes ? "print-notes-col-compact" : ""}
+                  style={{ ...ui.th, minWidth: printCompactNotes ? 120 : 180 }}
+                >
                   Notes
                 </th>
-                <th className="planning-actions-col no-print" style={{ ...ui.th, minWidth: 70 }}>
+                <th className="print-action-col" style={{ ...ui.th, minWidth: 80 }}>
                   Action
                 </th>
               </tr>
@@ -1122,29 +1181,28 @@ export default function PlanningRH({ adminState }) {
                     <tr key={row.id}>
                       {/* Nom */}
                       <td
-                        className="planning-sticky-col"
+                        className="print-sticky-left print-name-col"
                         style={{
                           ...ui.td,
                           position: "sticky",
                           left: 0,
                           background: "rgba(9,14,28,0.98)",
                           zIndex: 1,
-                          minWidth: 170,
+                          minWidth: 180,
                         }}
                       >
-                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                           <input
-                            className="planning-input planning-name-input"
-                            style={{ ...ui.input, padding: "7px 9px" }}
+                            className="print-input"
+                            style={ui.input}
                             value={row.name}
                             placeholder="Nom"
                             onChange={(e) =>
                               upsertRow(row.id, { name: normalizeName(e.target.value) })
                             }
                           />
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <div className="print-row-badge" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                             <span
-                              className="planning-role-chip"
                               style={{
                                 fontSize: 11,
                                 borderRadius: 999,
@@ -1161,13 +1219,13 @@ export default function PlanningRH({ adminState }) {
                       </td>
 
                       {/* Contrat */}
-                      <td style={ui.td}>
+                      <td className="print-contract-col" style={ui.td}>
                         <input
-                          className="planning-input"
+                          className="print-input"
                           type="number"
                           min="0"
                           step="0.5"
-                          style={{ ...ui.input, textAlign: "center", padding: "7px 8px" }}
+                          style={{ ...ui.input, textAlign: "center" }}
                           value={row.contractHours}
                           onChange={(e) =>
                             upsertRow(row.id, { contractHours: parseContractHours(e.target.value) })
@@ -1176,39 +1234,34 @@ export default function PlanningRH({ adminState }) {
                         />
                       </td>
 
-                      {/* 7 jours */}
+                      {/* 7 jours (ordre UI dim->sam) */}
                       {DAY_KEYS_UI_ORDER.map((dayKey) => {
                         const value = row.cells?.[dayKey] || "";
                         const tone = getCellTone(value);
 
                         let bg = "rgba(255,255,255,0.02)";
                         let border = "1px solid rgba(255,255,255,0.08)";
-                        let toneClass = "";
-
                         if (tone === "work") {
                           bg = "rgba(59,130,246,0.10)";
                           border = "1px solid rgba(59,130,246,0.24)";
-                          toneClass = "planning-cell-work";
                         } else if (tone === "rest") {
                           bg = "rgba(16,185,129,0.10)";
                           border = "1px solid rgba(16,185,129,0.22)";
-                          toneClass = "planning-cell-rest";
                         } else if (tone === "cp") {
                           bg = "rgba(245,158,11,0.10)";
                           border = "1px solid rgba(245,158,11,0.22)";
-                          toneClass = "planning-cell-cp";
                         } else if (tone === "alert") {
                           bg = "rgba(239,68,68,0.10)";
                           border = "1px solid rgba(239,68,68,0.22)";
-                          toneClass = "planning-cell-alert";
                         }
 
-                        const isSelected = selectedRowId === row.id && selectedDayKey === dayKey;
+                        const isSelected =
+                          selectedRowId === row.id && selectedDayKey === dayKey;
 
                         return (
-                          <td key={`${row.id}-${dayKey}`} style={ui.td} className={toneClass}>
+                          <td key={`${row.id}-${dayKey}`} className="print-day-col" style={ui.td}>
                             <input
-                              className="planning-cell-input"
+                              className="print-input print-cell-value"
                               style={{
                                 ...ui.input,
                                 textAlign: "center",
@@ -1220,8 +1273,6 @@ export default function PlanningRH({ adminState }) {
                                   ? "0 0 0 2px rgba(239,68,68,0.16)"
                                   : "none",
                                 fontWeight: 700,
-                                padding: "7px 6px",
-                                fontSize: 12,
                               }}
                               value={value}
                               placeholder="06:00-13:30 / RH"
@@ -1236,14 +1287,14 @@ export default function PlanningRH({ adminState }) {
                       })}
 
                       {/* Heures */}
-                      <td style={ui.td}>
+                      <td className="print-hours-col" style={ui.td}>
                         <div style={{ textAlign: "center", fontWeight: 800 }}>
                           {minutesToHourLabel(row.weeklyMin)}
                         </div>
                       </td>
 
                       {/* Écart */}
-                      <td style={ui.td}>
+                      <td className="print-delta-col" style={ui.td}>
                         <div
                           style={{
                             textAlign: "center",
@@ -1260,10 +1311,13 @@ export default function PlanningRH({ adminState }) {
                       </td>
 
                       {/* Notes */}
-                      <td style={ui.td}>
+                      <td
+                        className={printCompactNotes ? "print-notes-col-compact" : ""}
+                        style={ui.td}
+                      >
                         <input
-                          className="planning-input planning-notes-input"
-                          style={{ ...ui.input, padding: "7px 8px" }}
+                          className="print-input print-notes-text"
+                          style={ui.input}
                           value={row.notes || ""}
                           placeholder="ex: indispo mardi soir"
                           onChange={(e) => upsertRow(row.id, { notes: e.target.value })}
@@ -1271,8 +1325,9 @@ export default function PlanningRH({ adminState }) {
                       </td>
 
                       {/* Actions */}
-                      <td className="planning-actions-cell no-print" style={ui.td}>
+                      <td className="print-action-cell" style={ui.td}>
                         <button
+                          className="print-hide"
                           style={ui.btn}
                           onClick={() => removeEmployeeRow(row.id)}
                           title="Supprimer la ligne"
@@ -1287,14 +1342,10 @@ export default function PlanningRH({ adminState }) {
             </tbody>
           </table>
         </div>
-
-        <div className="print-only planning-print-footnote">
-          Planning RH DriveOps • Impression A4 paysage • Généré le {printGeneratedAt}
-        </div>
       </div>
 
-      {/* Aide de saisie (écran seulement) */}
-      <div style={ui.card} className="no-print">
+      {/* Aide de saisie */}
+      <div style={ui.card} className="print-card print-hide">
         <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16 }}>💡 Aide de saisie</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 13 }}>
           <span style={pill("work")}>Shift : 06:00-13:30</span>
@@ -1306,8 +1357,7 @@ export default function PlanningRH({ adminState }) {
         <div style={{ marginTop: 10, opacity: 0.8, fontSize: 13, lineHeight: 1.45 }}>
           • Les heures se calculent automatiquement à partir des formats <b>HH:MM-HH:MM</b>.<br />
           • Les codes RH / CP / OFF / AT / MAL ne comptent pas d’heures.<br />
-          • Sélectionne une cellule puis utilise les boutons “Affectation rapide”.<br />
-          • Pour une impression murale propre : utilise le bouton <b>🖨️ Imprimer A4</b>.
+          • Sélectionne une cellule puis utilise les boutons “Affectation rapide”.
         </div>
       </div>
     </div>
