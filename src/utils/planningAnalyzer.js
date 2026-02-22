@@ -1,10 +1,18 @@
 // src/utils/planningAnalyzer.js
 /* =========================================================
-   planningAnalyzer.js — Sprint 3 PRO / stable signatures
+   planningAnalyzer.js — Sprint 3 PRO / stable signatures (v2 compat)
    Exports:
    - analyzePlanning(input, options?)
    - aliases: analyzeWeekPlanning, getPlanningAnalysis, computePlanningAnalysis
    - default = analyzePlanning
+
+   ✅ Compat ajoutée :
+   - Lit doc.config / planningDoc.config (coverage, needsBySlot, skillCoverageBySlot, costing)
+   - Retourne coverageSummary.byDay
+   - Retourne costs.totalEstimated + byRole
+   - Retourne aliases summary attendus par UI/AutoBalance:
+     coverageGapsCount, skillCoverageGapsCount, estimatedPayrollCost
+   - needsBySlot inclut slotStart / slotEnd (compat planningAutoBalance)
    ========================================================= */
 
 const DAY_KEYS_MON_START_DEFAULT = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -98,29 +106,64 @@ function getWeeklyMinutes(cells, dayKeys) {
 }
 
 function normalizeSkillList(skills) {
-  if (!Array.isArray(skills)) return [];
-  return skills
-    .map((s) => String(s || "").trim().toLowerCase())
-    .filter(Boolean);
+  if (Array.isArray(skills)) {
+    return skills
+      .map((s) => String(s || "").trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (typeof skills === "string") {
+    return skills
+      .split(/[;,]/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function getDocConfig(input) {
+  if (input?.docConfig && typeof input.docConfig === "object" && !Array.isArray(input.docConfig)) {
+    return input.docConfig;
+  }
+  if (input?.planningDoc?.config && typeof input.planningDoc.config === "object") {
+    return input.planningDoc.config;
+  }
+  if (input?.doc?.config && typeof input.doc.config === "object") {
+    return input.doc.config;
+  }
+  return {};
 }
 
 function getHourlyRateForRow(row, input) {
   const direct = Number(row?.hourlyRate);
   if (Number.isFinite(direct) && direct > 0) return direct;
 
-  const roleRate = Number(input?.defaults?.hourlyRateByRole?.[row?.role]);
-  if (Number.isFinite(roleRate) && roleRate > 0) return roleRate;
+  // Compat ancien format input.defaults.hourlyRateByRole
+  const roleRateLegacy = Number(input?.defaults?.hourlyRateByRole?.[row?.role]);
+  if (Number.isFinite(roleRateLegacy) && roleRateLegacy > 0) return roleRateLegacy;
 
-  const fallback = Number(input?.defaults?.hourlyRate);
-  if (Number.isFinite(fallback) && fallback > 0) return fallback;
+  // ✅ Nouveau format doc.config.costing.hourlyRatesByRole
+  const docConfig = getDocConfig(input);
+  const role = String(row?.role || "").toLowerCase();
+  const roleRateCfg = Number(docConfig?.costing?.hourlyRatesByRole?.[role]);
+  if (Number.isFinite(roleRateCfg) && roleRateCfg > 0) return roleRateCfg;
+
+  const fallbackLegacy = Number(input?.defaults?.hourlyRate);
+  if (Number.isFinite(fallbackLegacy) && fallbackLegacy > 0) return fallbackLegacy;
+
+  const fallbackCfg = Number(docConfig?.costing?.defaultHourlyRate);
+  if (Number.isFinite(fallbackCfg) && fallbackCfg > 0) return fallbackCfg;
 
   return 0;
 }
 
 function normalizeCoverageConfig(input, options) {
+  const docConfig = getDocConfig(input);
+
   const c = {
     ...(input?.defaults?.coverage || {}),
     ...(input?.coverageConfig || {}),
+    ...(docConfig?.coverage || {}),
+    ...(docConfig?.coverageWindow || {}),
     ...(options?.coverage || {}),
   };
 
@@ -139,20 +182,64 @@ function normalizeCoverageConfig(input, options) {
 
 /**
  * Requirements formats supported:
- * requirementsByDaySlot[dayKey][slotKey] = number
- * requirementsByDaySlot[dayKey][slotKey] = { total, roles:{prep:2}, skills:{drive:1} }
- *
- * slotKey examples:
- * - "06:00"
- * - "06:00-06:30"
+ * - requirementsByDaySlot[dayKey][slotKey] = number
+ * - requirementsByDaySlot[dayKey][slotKey] = { total, roles, skills }
+ * - doc.config.needsBySlot + doc.config.skillCoverageBySlot (merged here)
  */
 function normalizeRequirements(input) {
-  return (
+  const direct =
     input?.requirementsByDaySlot ||
     input?.doc?.requirementsByDaySlot ||
     input?.coverageRequirements ||
-    {}
-  );
+    null;
+
+  const docConfig = getDocConfig(input);
+  const needsBySlot =
+    docConfig?.needsBySlot && typeof docConfig.needsBySlot === "object" ? docConfig.needsBySlot : {};
+  const skillCoverageBySlot =
+    docConfig?.skillCoverageBySlot && typeof docConfig.skillCoverageBySlot === "object"
+      ? docConfig.skillCoverageBySlot
+      : {};
+
+  // If direct is present, keep it (already pre-normalized by caller usually)
+  if (direct && typeof direct === "object") return direct;
+
+  const merged = {};
+  for (const dayKey of DAY_KEYS_MON_START_DEFAULT) {
+    const dayNeeds = needsBySlot?.[dayKey];
+    const daySkills = skillCoverageBySlot?.[dayKey];
+
+    const dayOut = {};
+    const slotKeys = new Set([
+      ...Object.keys(dayNeeds && typeof dayNeeds === "object" ? dayNeeds : {}),
+      ...Object.keys(daySkills && typeof daySkills === "object" ? daySkills : {}),
+    ]);
+
+    for (const slotKey of slotKeys) {
+      const n = dayNeeds?.[slotKey];
+      const s = daySkills?.[slotKey];
+
+      let base = {};
+      if (typeof n === "number") {
+        base = { total: Math.max(0, Number(n) || 0) };
+      } else if (n && typeof n === "object") {
+        base = { ...n };
+      }
+
+      if (s && typeof s === "object") {
+        base.skills = {
+          ...(base.skills && typeof base.skills === "object" ? base.skills : {}),
+          ...s,
+        };
+      }
+
+      if (Object.keys(base).length > 0) dayOut[slotKey] = base;
+    }
+
+    if (Object.keys(dayOut).length > 0) merged[dayKey] = dayOut;
+  }
+
+  return merged;
 }
 
 function resolveRequirementForSlot(requirementsByDaySlot, dayKey, slotStartMin, slotEndMin) {
@@ -233,6 +320,48 @@ function aggregateCoverageForSlot(rows, dayKey, slotStartMin) {
   return { plannedRows, plannedTotal, plannedRoles, plannedSkills, codes };
 }
 
+function buildCoverageSummary(dayKeys, needsBySlot, coverageGaps) {
+  const byDay = {};
+
+  for (const dayKey of dayKeys) {
+    byDay[dayKey] = {
+      totalNeed: 0,
+      totalPlanned: 0,
+      totalGap: 0,
+      roleGapsCount: 0,
+      skillGapsCount: 0,
+      slotCount: 0,
+      slotsWithGapCount: 0,
+    };
+  }
+
+  for (const slot of needsBySlot) {
+    const dk = slot?.dayKey;
+    if (!byDay[dk]) continue;
+
+    byDay[dk].totalNeed += Number(slot.requiredTotal || 0);
+    byDay[dk].totalPlanned += Number(slot.plannedTotal || 0);
+    byDay[dk].totalGap += Number(slot.totalGap || 0);
+    byDay[dk].slotCount += 1;
+    byDay[dk].roleGapsCount += Array.isArray(slot.roleGaps)
+      ? slot.roleGaps.filter((g) => Number(g?.gap || 0) > 0).length
+      : 0;
+    byDay[dk].skillGapsCount += Array.isArray(slot.skillGaps)
+      ? slot.skillGaps.filter((g) => Number(g?.gap || 0) > 0).length
+      : 0;
+  }
+
+  for (const g of coverageGaps) {
+    const dk = g?.dayKey;
+    if (!byDay[dk]) continue;
+    if (g?.type === "coverage_total_gap" || g?.type === "coverage_skill_gap") {
+      byDay[dk].slotsWithGapCount += 1;
+    }
+  }
+
+  return { byDay };
+}
+
 export function analyzePlanning(input = {}, options = {}) {
   const dayKeys = normalizeDayKeys(input);
   const rows = Array.isArray(input?.rows) ? input.rows : [];
@@ -271,7 +400,9 @@ export function analyzePlanning(input = {}, options = {}) {
         staff: st.name,
         rowId: st.rowId,
         deltaMinutes: st.deltaMin,
-        message: `${st.name || "Collaborateur"} : écart contrat ${st.deltaMin > 0 ? "+" : ""}${minutesToHourLabel(st.deltaMin)}`,
+        message: `${st.name || "Collaborateur"} : écart contrat ${st.deltaMin > 0 ? "+" : ""}${minutesToHourLabel(
+          st.deltaMin
+        )}`,
       });
     }
   }
@@ -332,7 +463,8 @@ export function analyzePlanning(input = {}, options = {}) {
       });
 
       const hasRoleGap = roleGaps.some((x) => x.gap > 0);
-      const hasSkillGap = skillGaps.some((x) => x.gap > 0);
+      const skillGapItems = skillGaps.filter((x) => x.gap > 0);
+      const hasSkillGap = skillGapItems.length > 0;
       const hasGap = totalGap > 0 || hasRoleGap || hasSkillGap;
 
       const slotRec = {
@@ -341,35 +473,68 @@ export function analyzePlanning(input = {}, options = {}) {
         slotLabel: `${minToHHMM(slotStart)}-${minToHHMM(slotEnd)}`,
         start: minToHHMM(slotStart),
         end: minToHHMM(slotEnd),
+        // ✅ aliases autoBalance
+        slotStart: minToHHMM(slotStart),
+        slotEnd: minToHHMM(slotEnd),
+
         requiredTotal: Number(req.total) || 0,
+        totalNeed: Number(req.total) || 0, // alias
         plannedTotal: cov.plannedTotal,
         totalGap,
+        gap: totalGap, // alias total gap
+
         requiredRoles: req.roles || {},
         plannedRoles: cov.plannedRoles || {},
         roleGaps,
+
         requiredSkills: req.skills || {},
         plannedSkills: cov.plannedSkills || {},
         skillGaps,
+
         plannedCodes: cov.codes || {},
       };
 
       needsBySlot.push(slotRec);
 
       if (hasGap) {
-        coverageGaps.push({
-          ...slotRec,
-          gap: totalGap,
-          severity: totalGap >= 2 || skillGaps.some((x) => x.gap >= 2) ? "high" : "warning",
-          message:
-            totalGap > 0
-              ? `${String(dk).toUpperCase()} ${slotRec.slotLabel} : besoin ${req.total}, planifié ${cov.plannedTotal}`
-              : `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque compétence`,
-        });
+        // Gap total (coverage)
+        if (totalGap > 0) {
+          coverageGaps.push({
+            ...slotRec,
+            type: "coverage_total_gap",
+            gap: totalGap,
+            severity: totalGap >= 2 ? "high" : "warning",
+            message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : besoin ${req.total}, planifié ${cov.plannedTotal}`,
+          });
+        }
+
+        // Gaps compétence (1 item / skill gap)
+        for (const sg of skillGapItems) {
+          coverageGaps.push({
+            ...slotRec,
+            type: "coverage_skill_gap",
+            skill: sg.skill,
+            gap: Number(sg.gap) || 0,
+            severity: (Number(sg.gap) || 0) >= 2 ? "high" : "warning",
+            message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque compétence ${sg.skill} (${sg.planned}/${sg.needed})`,
+          });
+        }
+
+        // fallback if only role gaps
+        if (totalGap === 0 && !hasSkillGap && hasRoleGap) {
+          coverageGaps.push({
+            ...slotRec,
+            type: "coverage_role_gap",
+            gap: roleGaps.reduce((s, r) => s + (Number(r.gap) || 0), 0),
+            severity: roleGaps.some((r) => (Number(r.gap) || 0) >= 2) ? "high" : "warning",
+            message: `${String(dk).toUpperCase()} ${slotRec.slotLabel} : manque rôle(s)`,
+          });
+        }
       }
     }
   }
 
-  // Add coverage gap warnings (compact)
+  // Add compact warnings from top coverage gaps
   for (const g of coverageGaps.slice(0, 20)) {
     warnings.push({
       type: "coverage_gap",
@@ -392,6 +557,9 @@ export function analyzePlanning(input = {}, options = {}) {
   const totalPlannedMinutes = rowStats.reduce((s, r) => s + (Number(r.weeklyMinutes) || 0), 0);
   const totalTargetMinutes = rowStats.reduce((s, r) => s + (Number(r.targetMin) || 0), 0);
 
+  const coverageSummary = buildCoverageSummary(dayKeys, needsBySlot, coverageGaps);
+  const skillCoverageGapsCount = coverageGaps.filter((g) => g.type === "coverage_skill_gap").length;
+
   return {
     summary: {
       staffCount: rows.length,
@@ -399,16 +567,37 @@ export function analyzePlanning(input = {}, options = {}) {
       totalPlannedMinutes,
       totalTargetMinutes,
       totalDeltaMinutes: totalPlannedMinutes - totalTargetMinutes,
+
+      // ✅ aliases coût
       estimatedCost,
+      estimatedPayrollCost: estimatedCost,
       estimatedCostByRole,
+
+      // ✅ aliases gaps
       coverageGapCount: coverageGaps.length,
+      coverageGapsCount: coverageGaps.length,
+      skillCoverageGapsCount,
       slotsAnalyzed: needsBySlot.length,
     },
+
     rowStats,
     byDay,
     warnings,
+
+    // ✅ payloads détaillés
     needsBySlot,
     coverageGaps,
+    coverageSummary,
+
+    // ✅ compat UI
+    costs: {
+      totalEstimated: estimatedCost,
+      byRole: estimatedCostByRole,
+      currency: "EUR",
+    },
+
+    // alias placeholder (certaines UIs anciennes le lisent)
+    rulesResults: [],
   };
 }
 
