@@ -123,8 +123,10 @@ function hhmmToMin(hhmm) {
 }
 
 function safeParseCellDetailed(cell) {
+  // ✅ compatible avec planningRules.js partagé
   const candidates = [
     PlanningRules.parseShiftCellDetailed,
+    // aliases robustes si jamais tu les réintroduis plus tard
     PlanningRules.parseCell,
     PlanningRules.getCellDetails,
     PlanningRules.defaultParseShiftCellDetailed,
@@ -469,6 +471,12 @@ function runPlanningAnalysis(input) {
       warningsCount: warnings.length,
       coverageGapsCount: 0,
       estimatedPayrollCost: 0,
+      totalPlannedMinutes: rows.reduce((sum, r) => sum + computeRowWeeklyMinutes(r.cells || {}), 0),
+      totalTargetMinutes: rows.reduce((sum, r) => sum + (Number(r.contractHours) || 0) * 60, 0),
+      totalDeltaMinutes: rows.reduce(
+        (sum, r) => sum + (computeRowWeeklyMinutes(r.cells || {}) - (Number(r.contractHours) || 0) * 60),
+        0
+      ),
     },
     byDay,
     warnings,
@@ -507,7 +515,8 @@ function runAutoBalance(input) {
   ];
 
   for (const c of candidates) {
-    const res = safeCall(c, input);
+    // ✅ certains utils acceptent (input, options), d'autres seulement (input)
+    const res = safeCall(c, input, input?.options || {});
     if (res) return res;
   }
 
@@ -628,7 +637,7 @@ export default function PlanningRH({ adminState }) {
         console.warn("[PlanningRH] remote load fallback local:", e?.message || e);
       }
 
-      if (!loaded) {
+      if (!loaded && typeof localStorage !== "undefined") {
         const raw = localStorage.getItem(localKey(normalizedSite, weekStartMonday));
         if (raw) {
           try {
@@ -739,7 +748,9 @@ export default function PlanningRH({ adminState }) {
 
     // local backup
     try {
-      localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
+      }
     } catch {}
 
     const t = setTimeout(async () => {
@@ -837,7 +848,9 @@ export default function PlanningRH({ adminState }) {
               : String(Date.now() + Math.random()),
         })),
       };
-      localStorage.setItem(localKey(normalizedSite, nextMonday), JSON.stringify(cloned));
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(localKey(normalizedSite, nextMonday), JSON.stringify(cloned));
+      }
       alert("Semaine copiée localement vers la semaine suivante ✅");
     } catch {
       alert("Copie locale impossible.");
@@ -1006,6 +1019,7 @@ export default function PlanningRH({ adminState }) {
     try {
       const input = {
         ...analysisInput,
+        rows: doc.rows || [],
         options: {
           mode: "contract-balance",
           toleranceMinutes: 30,
@@ -1014,10 +1028,7 @@ export default function PlanningRH({ adminState }) {
         },
       };
 
-      const result = runAutoBalance({
-        ...input,
-        rows: doc.rows || [],
-      });
+      const result = runAutoBalance(input);
 
       if (!result) {
         setAutoBalanceMessage("Auto-balance indisponible (utilitaire non exposé ou pas encore finalisé).");
