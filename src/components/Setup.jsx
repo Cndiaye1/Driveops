@@ -1,3 +1,4 @@
+// src/components/Setup.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useDriveStore } from "../store/useDriveStore";
 import { getFirstBlockId } from "../utils/blocks";
@@ -50,6 +51,7 @@ export default function Setup({ adminState } = {}) {
     startService,
     goCockpit,
     goAdmin,
+    goPlanning, // ✅ NEW (si absent du store, on gère fallback)
     resetDay,
 
     serviceStartedAt,
@@ -139,22 +141,32 @@ export default function Setup({ adminState } = {}) {
     }
   }
 
-  function pushUrl(pathname) {
+  // ✅ Hash routing helper (Vercel-safe)
+  function pushHash(hash) {
     try {
-      if (typeof window !== "undefined" && window.location.pathname !== pathname) {
-        window.history.pushState({}, "", pathname);
+      if (typeof window === "undefined") return;
+      const nextHash = String(hash || "#/");
+      if (window.location.hash !== nextHash) {
+        window.location.hash = nextHash;
       }
     } catch {}
   }
 
   function goToAdmin() {
     goAdmin?.();
-    pushUrl("/admin");
+    pushHash("#/admin");
   }
 
   function goToCockpitSafe() {
     goCockpit?.();
-    pushUrl("/");
+    pushHash("#/cockpit");
+  }
+
+  function goToPlanning() {
+    // si l'action existe dans le store, on l'utilise
+    goPlanning?.();
+    // et on force aussi le hash pour robustesse
+    pushHash("#/planning");
   }
 
   async function handleLogout() {
@@ -165,7 +177,8 @@ export default function Setup({ adminState } = {}) {
     } finally {
       resetAuthState?.();
       try {
-        window.location.assign("/");
+        // ✅ reset vers hash setup
+        window.location.assign("/#/");
       } catch {}
     }
   }
@@ -294,6 +307,7 @@ export default function Setup({ adminState } = {}) {
           isAdmin={isAdmin}
           goToAdmin={goToAdmin}
           goToCockpitSafe={goToCockpitSafe}
+          goToPlanning={goToPlanning} // ✅ NEW (si SetupHeader le supporte)
           handleLogout={handleLogout}
           apiStatus={apiStatus}
           apiError={apiError}
@@ -303,6 +317,29 @@ export default function Setup({ adminState } = {}) {
           hasCfgStatusLine={hasCfgStatusLine}
           role={role}
         />
+
+        {/* ✅ Fallback button PlanningRH si SetupHeader n'affiche pas encore le bouton */}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            padding: "10px 14px 0",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            type="button"
+            onClick={goToPlanning}
+            style={{
+              ...ui.btnGhost,
+              padding: "8px 12px",
+              fontSize: 13,
+            }}
+            title="Ouvrir le planning RH hebdomadaire"
+          >
+            📅 Planning RH
+          </button>
+        </div>
 
         <SetupStepTabs
           ui={ui}
