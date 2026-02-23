@@ -9,17 +9,32 @@ import * as PlanningAnalyzer from "../utils/planningAnalyzer";
 import * as PlanningAutoBalance from "../utils/planningAutoBalance";
 
 /* =========================================================
-   PlanningRH v2.6 PRO (DriveOps) — Sprint 3 stable
+   PlanningRH v2.7 PRO (DriveOps) — Sprint 3 stable
    - Semaine RH (stockage = lundi)
    - Affichage grille = Dimanche -> Samedi (terrain)
    - Supabase-ready + fallback localStorage
    - Analyse RH (règles / écarts / besoins / couverture / coût)
    - Auto-balance (contrat + contraintes + couverture)
    - Print A4 paysage v2+ (créneau + badge code séparés)
-   - ✅ Patch Skills CSV par collaborateur (row.skills)
+   - ✅ Patch skill actif par cellule (/PGC, /FS, /MES...)
    ========================================================= */
 
 const ABSENCE_CODES = ["RH", "CP", "OFF", "AT", "MAL", "ABS"];
+
+// ✅ Référentiel poste/skill Drive (suffixe cellule)
+const ACTIVE_SKILL_CODES = [
+  "ACCUEIL",
+  "PGC",
+  "FS",
+  "LIV",
+  "MES",
+  "LAD",
+  "FLEG/SURG",
+  "RE",
+  "NET",
+  "POLYVALENT",
+];
+
 const QUICK_SHIFTS = [
   { label: "Matin", value: "06:00-13:30" },
   { label: "Journée", value: "09:00-17:00" },
@@ -37,37 +52,6 @@ const DAY_KEYS_MON_START = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]; //
 const DAY_KEYS_UI_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]; // affichage dimanche->samedi
 
 const LS_PREFIX = "driveops_rh_planning_v1";
-
-/** ✅ Skills Drive (postes/compétences) — clés alignées analyzer/doc.config */
-const DRIVE_SKILL_KEYS = [
-  "accueil",
-  "pgc",
-  "fs",
-  "liv",
-  "mes",
-  "lad",
-  "fleg/surg",
-  "re",
-  "net",
-];
-
-const SKILL_ALIASES = {
-  accueil: "accueil",
-  acceuil: "accueil",
-  pgc: "pgc",
-  fs: "fs",
-  liv: "liv",
-  mes: "mes",
-  lad: "lad",
-  "fleg/surg": "fleg/surg",
-  "fleg-surg": "fleg/surg",
-  "fleg_surg": "fleg/surg",
-  flegsurg: "fleg/surg",
-  fleg: "fleg/surg",
-  surg: "fleg/surg",
-  re: "re",
-  net: "net",
-};
 
 // ---------- utils date / semaine
 function pad2(n) {
@@ -144,6 +128,14 @@ function normalizeName(v) {
   return String(v || "").trim().toUpperCase();
 }
 
+function normalizeSkillCode(v) {
+  return String(v || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .replace(/^\/+/, "");
+}
+
 function isAbsenceCode(v) {
   return ABSENCE_CODES.includes(String(v || "").trim().toUpperCase());
 }
@@ -154,62 +146,16 @@ function hhmmToMin(hhmm) {
   return h * 60 + m;
 }
 
-/** ✅ Skills helpers */
-function normalizeSkillKey(v) {
-  const raw = String(v || "").trim().toLowerCase();
-  if (!raw) return "";
-  const compact = raw.replace(/\s+/g, "");
-  return SKILL_ALIASES[raw] || SKILL_ALIASES[compact] || raw;
-}
-
-function normalizeSkillsListInput(input) {
-  if (Array.isArray(input)) {
-    const out = [];
-    const seen = new Set();
-
-    for (const x of input) {
-      const k = normalizeSkillKey(x);
-      if (!k || seen.has(k)) continue;
-      seen.add(k);
-      out.push(k);
-    }
-    return out;
-  }
-
-  // tolère string CSV legacy
-  if (typeof input === "string") {
-    return parseSkillsCsvInput(input);
-  }
-
-  return [];
-}
-
-function parseSkillsCsvInput(csv) {
-  const parts = String(csv || "")
-    .split(",")
-    .map((x) => normalizeSkillKey(x))
-    .filter(Boolean);
-
-  const seen = new Set();
-  const out = [];
-  for (const p of parts) {
-    if (seen.has(p)) continue;
-    seen.add(p);
-    out.push(p);
-  }
-  return out;
-}
-
-function skillsToCsv(skills) {
-  return normalizeSkillsListInput(skills).join(", ");
-}
-
 function safeParseCellDetailed(cell) {
   const candidates = [
     PlanningRules.parseShiftCellDetailed,
+    PlanningAnalyzer.parseShiftCellDetailed, // ✅ priorité analyzer concordant
     PlanningRules.parseCell,
+    PlanningAnalyzer.parseCell,
     PlanningRules.getCellDetails,
+    PlanningAnalyzer.getCellDetails,
     PlanningRules.defaultParseShiftCellDetailed,
+    PlanningAnalyzer.defaultParseShiftCellDetailed,
   ];
 
   for (const fn of candidates) {
@@ -255,7 +201,8 @@ function safeParseCellDetailed(cell) {
     };
   }
 
-  const m = normalized.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\/([A-Z0-9_-]+))?$/);
+  // ✅ suffixe autorise slash interne (FLEG/SURG)
+  const m = normalized.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})(?:\/([A-Z0-9/_-]+))?$/);
   if (!m) {
     return {
       type: "invalid",
@@ -317,6 +264,7 @@ function safeParseCellDetailed(cell) {
     isAbsence: false,
     valid: true,
     code,
+    activeSkill: code || "",
     absenceCode: "",
     startHHMM: m[1],
     endHHMM: m[2],
@@ -390,6 +338,47 @@ function formatCurrencyEUR(value) {
   }).format(n);
 }
 
+// ✅ helpers skills / suffixe cellule
+function skillsCsvToArray(csv) {
+  if (!csv) return [];
+  return Array.from(
+    new Set(
+      String(csv)
+        .split(",")
+        .map((s) => normalizeSkillCode(s))
+        .filter(Boolean)
+    )
+  );
+}
+
+function skillsArrayToCsv(arr) {
+  if (!Array.isArray(arr)) return "";
+  return arr.map((s) => normalizeSkillCode(s)).filter(Boolean).join(", ");
+}
+
+function stripCellSuffix(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return "";
+  const d = safeParseCellDetailed(raw);
+  if (!d?.isWork) return raw;
+  if (d.startHHMM && d.endHHMM) return `${d.startHHMM}-${d.endHHMM}`;
+  return raw.replace(/\/[A-Z0-9/_-]+$/i, "");
+}
+
+function withCellSuffix(value, code) {
+  const cleanCode = normalizeSkillCode(code);
+  if (!cleanCode) return String(value || "").trim().toUpperCase();
+
+  const d = safeParseCellDetailed(value);
+  if (!d?.isWork) return String(value || "").trim().toUpperCase();
+
+  const base = d.startHHMM && d.endHHMM
+    ? `${d.startHHMM}-${d.endHHMM}`
+    : stripCellSuffix(value);
+
+  return `${base}/${cleanCode}`;
+}
+
 // ---------- modèle data
 function makeEmptyCells() {
   return {
@@ -416,9 +405,9 @@ function makeRow(name, contractHours = 35) {
     role: "prep", // prep | coordo | autre
     cells: makeEmptyCells(),
     notes: "",
-    skills: [], // ✅ ex ["pgc","fs","mes"]
-    availability: {}, // Sprint 3 PRO: ex { mon: false, tue: ["06:00-14:00"] }
-    hourlyRate: undefined, // optionnel (sinon analyzer fallback rôle/default)
+    skills: [], // fallback si pas de suffixe cellule
+    availability: {},
+    hourlyRate: undefined,
   };
 }
 
@@ -429,13 +418,7 @@ function makePlanningDoc({ siteCode, weekStartMonday, rows = [] }) {
     rows,
     updatedAt: new Date().toISOString(),
     version: 2,
-    // config optionnelle (Sprint 3 PRO)
-    // config: {
-    //   rhRules: {...},
-    //   needsBySlot: { mon: { "06:00-08:00": 2 } },
-    //   skillCoverageBySlot: { mon: { "08:00-10:00": { drive:1 } } },
-    //   costing: { defaultHourlyRate:12, hourlyRatesByRole:{ prep:12, coordo:14.5 } }
-    // }
+    // config optionnelle Sprint 3 PRO: doc.config = { coverage, requirementsByDaySlot, costing, ... }
   };
 }
 
@@ -446,7 +429,6 @@ function localKey(siteCode, weekStartMonday) {
 
 // ---------- Supabase (fallback local si table absente)
 async function loadPlanningRemote(siteCode, weekStartMonday) {
-  // Table recommandée: drive_rh_plannings(site_code text, week_start date, data_json jsonb, updated_at timestamptz)
   const { data, error } = await supabase
     .from("drive_rh_plannings")
     .select("site_code, week_start, data_json, updated_at")
@@ -490,30 +472,19 @@ function buildAnalyzerInput({ doc, rowsWithStats, normalizedSite, weekStartMonda
     dayKeysMonStart: DAY_KEYS_MON_START,
     dayKeysUiOrder: DAY_KEYS_UI_ORDER,
     planningDoc: doc,
-    doc: doc, // ✅ compat analyzer versions qui lisent input.doc
     docConfig: doc?.config || {}, // ✅ explicite
-    defaults: {
-      hourlyRate: Number(doc?.config?.costing?.defaultHourlyRate || 0) || 0,
-      hourlyRateByRole: doc?.config?.costing?.hourlyRatesByRole || {},
-      coverage: doc?.config?.coverage || {},
-    },
-    requirementsByDaySlot:
-      doc?.config?.requirementsByDaySlot ||
-      doc?.requirementsByDaySlot ||
-      {},
+    doc: { config: doc?.config || {} }, // ✅ compat analyzer
     rows: (doc?.rows || []).map((r) => ({
       ...r,
       contractHours: Number(r.contractHours) || 0,
-      skills: normalizeSkillsListInput(r.skills),
       weeklyMinutes: computeRowWeeklyMinutes(r.cells || {}),
       weeklyHours: Math.round((computeRowWeeklyMinutes(r.cells || {}) / 60) * 100) / 100,
     })),
-    rowsWithStats, // version enrichie (all rows)
+    rowsWithStats,
   };
 }
 
 function runPlanningAnalysis(input) {
-  // signatures fixes + alias rétrocompatibles
   const candidates = [
     PlanningAnalyzer.analyzePlanning,
     PlanningAnalyzer.analyzeWeekPlanning,
@@ -563,21 +534,19 @@ function runPlanningAnalysis(input) {
       coverageGapsCount: 0,
       estimatedPayrollCost: 0,
       totalPlannedMinutes: rows.reduce((s, r) => s + computeRowWeeklyMinutes(r.cells || {}), 0),
-      totalTargetMinutes: rows.reduce(
-        (s, r) => s + (Number(r.contractHours || 0) * 60),
-        0
-      ),
+      totalTargetMinutes: rows.reduce((s, r) => s + (Number(r.contractHours) || 0) * 60, 0),
       totalDeltaMinutes:
         rows.reduce((s, r) => s + computeRowWeeklyMinutes(r.cells || {}), 0) -
-        rows.reduce((s, r) => s + (Number(r.contractHours || 0) * 60), 0),
+        rows.reduce((s, r) => s + (Number(r.contractHours) || 0) * 60, 0),
+      skillCoverageGapsCount: 0,
     },
     byDay,
     warnings,
     rulesResults: [],
     needsBySlot: [],
     coverageGaps: [],
-    costs: { totalEstimated: 0, currency: "EUR" },
     coverageSummary: { byDay: {} },
+    costs: { totalEstimated: 0, currency: "EUR" },
   };
 }
 
@@ -618,14 +587,9 @@ function runAutoBalance(input) {
 function applyAutoBalanceResultToRows(currentRows, result) {
   if (!result) return null;
 
-  // Formats supportés :
-  // 1) { rows: [...] }
   if (Array.isArray(result.rows)) return result.rows;
-
-  // 2) { updatedRows: [...] }
   if (Array.isArray(result.updatedRows)) return result.updatedRows;
 
-  // 3) { patches: [{rowId, dayKey, value}, ...] }
   if (Array.isArray(result.patches)) {
     const rows = (currentRows || []).map((r) => ({ ...r, cells: { ...(r.cells || {}) } }));
     const byId = new Map(rows.map((r) => [r.id, r]));
@@ -690,7 +654,6 @@ export default function PlanningRH({ adminState }) {
     [weekStartMonday]
   );
 
-  // map clé jour -> label date (ordre UI)
   const displayDayMeta = useMemo(() => {
     return DAY_KEYS_UI_ORDER.map((k, idx) => ({
       key: k,
@@ -699,6 +662,23 @@ export default function PlanningRH({ adminState }) {
       dateLabel: formatFrShort(displayWeekDates[idx]),
     }));
   }, [displayWeekDates]);
+
+  // Cellule sélectionnée (debug / outils suffixe)
+  const selectedCellInfo = useMemo(() => {
+    if (!selectedRowId || !selectedDayKey) return null;
+    const row = (doc.rows || []).find((r) => r.id === selectedRowId);
+    if (!row) return null;
+    const value = row.cells?.[selectedDayKey] || "";
+    const parsed = safeParseCellDetailed(value);
+    return {
+      rowId: row.id,
+      rowName: row.name || "",
+      dayKey: selectedDayKey,
+      value,
+      parsed,
+      activeCode: normalizeSkillCode(parsed?.code || parsed?.activeSkill || ""),
+    };
+  }, [doc.rows, selectedRowId, selectedDayKey]);
 
   // ---------- load (Supabase -> fallback local)
   const loadWeek = useCallback(async () => {
@@ -725,7 +705,6 @@ export default function PlanningRH({ adminState }) {
           };
         }
       } catch (e) {
-        // fallback local si table n'existe pas encore / RLS pas prêt
         console.warn("[PlanningRH] remote load fallback local:", e?.message || e);
       }
 
@@ -741,7 +720,7 @@ export default function PlanningRH({ adminState }) {
               weekStartMonday,
             };
           } catch {
-            // ignore parse local
+            // ignore
           }
         }
       }
@@ -754,7 +733,6 @@ export default function PlanningRH({ adminState }) {
         });
       }
 
-      // sécurité schema
       loaded.rows = Array.isArray(loaded.rows)
         ? loaded.rows.map((r) => ({
             id:
@@ -767,7 +745,9 @@ export default function PlanningRH({ adminState }) {
             role: r.role || "prep",
             cells: { ...makeEmptyCells(), ...(r.cells || {}) },
             notes: r.notes || "",
-            skills: normalizeSkillsListInput(r.skills), // ✅ patch skills
+            skills: Array.isArray(r.skills)
+              ? r.skills.map((s) => normalizeSkillCode(s)).filter(Boolean)
+              : [],
             availability: r.availability && typeof r.availability === "object" ? r.availability : {},
             hourlyRate:
               Number.isFinite(Number(r.hourlyRate)) && Number(r.hourlyRate) > 0
@@ -776,7 +756,6 @@ export default function PlanningRH({ adminState }) {
           }))
         : [];
 
-      // config optionnelle
       loaded.config = loaded.config && typeof loaded.config === "object" ? loaded.config : {};
 
       setDoc(loaded);
@@ -829,7 +808,6 @@ export default function PlanningRH({ adminState }) {
     setAutoAddFromDriveOpsDone(true);
   }, [loading, autoAddFromDriveOpsDone, doc?.rows, preparateursList, coordosList]);
 
-  // reset auto-merge flag when week/site changes
   useEffect(() => {
     setAutoAddFromDriveOpsDone(false);
   }, [weekStartMonday, normalizedSite]);
@@ -838,7 +816,6 @@ export default function PlanningRH({ adminState }) {
   useEffect(() => {
     if (!doc || !normalizedSite || !weekStartMonday) return;
 
-    // local backup
     try {
       localStorage.setItem(localKey(normalizedSite, weekStartMonday), JSON.stringify(doc));
     } catch {}
@@ -870,16 +847,10 @@ export default function PlanningRH({ adminState }) {
 
   // ---------- mutations
   const upsertRow = useCallback((rowId, patch) => {
-    const normalizedPatch = { ...patch };
-
-    if (Object.prototype.hasOwnProperty.call(normalizedPatch, "skills")) {
-      normalizedPatch.skills = normalizeSkillsListInput(normalizedPatch.skills);
-    }
-
     setDoc((prev) => ({
       ...prev,
       updatedAt: new Date().toISOString(),
-      rows: prev.rows.map((r) => (r.id === rowId ? { ...r, ...normalizedPatch } : r)),
+      rows: prev.rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)),
     }));
     setAnalysisRefreshTick((x) => x + 1);
   }, []);
@@ -903,6 +874,51 @@ export default function PlanningRH({ adminState }) {
     }));
     setAnalysisRefreshTick((x) => x + 1);
   }, []);
+
+  // ✅ Applique / remplace le suffixe actif sur la cellule sélectionnée
+  const applyActiveSkillToSelection = useCallback(
+    (code) => {
+      if (!selectedRowId || !selectedDayKey) {
+        alert("Sélectionne d’abord une cellule.");
+        return;
+      }
+
+      const row = (doc.rows || []).find((r) => r.id === selectedRowId);
+      if (!row) return;
+
+      const current = row.cells?.[selectedDayKey] || "";
+      const parsed = safeParseCellDetailed(current);
+
+      if (!parsed?.isWork) {
+        alert("Le poste actif (/CODE) s’applique uniquement à un créneau de travail (ex: 06:00-13:30).");
+        return;
+      }
+
+      setCell(selectedRowId, selectedDayKey, withCellSuffix(current, code));
+    },
+    [selectedRowId, selectedDayKey, doc.rows, setCell]
+  );
+
+  // ✅ Retire le suffixe /CODE de la cellule sélectionnée (conserve le créneau)
+  const clearActiveSkillFromSelection = useCallback(() => {
+    if (!selectedRowId || !selectedDayKey) {
+      alert("Sélectionne d’abord une cellule.");
+      return;
+    }
+
+    const row = (doc.rows || []).find((r) => r.id === selectedRowId);
+    if (!row) return;
+
+    const current = row.cells?.[selectedDayKey] || "";
+    const parsed = safeParseCellDetailed(current);
+
+    if (!parsed?.isWork) {
+      alert("La cellule sélectionnée n’est pas un créneau de travail.");
+      return;
+    }
+
+    setCell(selectedRowId, selectedDayKey, stripCellSuffix(current));
+  }, [selectedRowId, selectedDayKey, doc.rows, setCell]);
 
   const addEmployeeRow = useCallback(() => {
     const row = makeRow("", 35);
@@ -997,7 +1013,6 @@ export default function PlanningRH({ adminState }) {
     });
   }, [filteredRows]);
 
-  // Analyse RH = sur TOUT le planning (pas seulement les lignes filtrées UI)
   const allRowsWithStats = useMemo(() => {
     return (doc.rows || []).map((r) => {
       const weeklyMin = computeRowWeeklyMinutes(r.cells);
@@ -1018,7 +1033,7 @@ export default function PlanningRH({ adminState }) {
     };
   }, [rowsWithStats]);
 
-  // ---------- Sprint 3 analyse branchée utilitaires
+  // ---------- Analyse Sprint 3
   const analysisInput = useMemo(
     () =>
       buildAnalyzerInput({
@@ -1043,7 +1058,6 @@ export default function PlanningRH({ adminState }) {
   const compactAlerts = useMemo(() => {
     const arr = [];
 
-    // warnings analyzer
     const aw = analysisResult?.analysis?.warnings || [];
     for (const w of aw.slice(0, 8)) {
       arr.push({
@@ -1052,7 +1066,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // rules violations
     const rv = analysisResult?.rules?.violations || [];
     for (const v of rv.slice(0, 8)) {
       arr.push({
@@ -1061,7 +1074,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // coverage gaps (top)
     const cg = (analysisResult?.analysis?.coverageGaps || []).slice(0, 6);
     for (const g of cg) {
       arr.push({
@@ -1070,7 +1082,6 @@ export default function PlanningRH({ adminState }) {
       });
     }
 
-    // fallback simple if no util output
     if (arr.length === 0) {
       const majorDiff = (allRowsWithStats || [])
         .filter((r) => Math.abs(r.diffMin) >= 120)
@@ -1166,14 +1177,12 @@ export default function PlanningRH({ adminState }) {
     }
   }, [autoBalanceRunning, analysisInput, doc.rows]);
 
-  // ---------- impression A4 paysage (v2+)
   const handlePrint = useCallback(() => {
     try {
       window.print();
     } catch {}
   }, []);
 
-  // ---------- style inline minimal (cohérent Cockpit)
   const ui = {
     page: {
       maxWidth: 1460,
@@ -1270,7 +1279,6 @@ export default function PlanningRH({ adminState }) {
   const estimatedCost =
     analysisResult?.analysis?.costs?.totalEstimated ??
     analysisResult?.analysis?.summary?.estimatedPayrollCost ??
-    analysisResult?.analysis?.summary?.estimatedCost ??
     0;
 
   const violationsCount = (analysisResult?.rules?.violations || []).length;
@@ -1464,7 +1472,6 @@ export default function PlanningRH({ adminState }) {
             </div>
           </div>
 
-          {/* mini synthèse couverture par jour */}
           {coverageByDayMini.some((d) => d.totalNeed > 0 || d.totalPlanned > 0 || d.totalGap > 0) && (
             <div
               style={{
@@ -1509,7 +1516,6 @@ export default function PlanningRH({ adminState }) {
             </div>
           )}
 
-          {/* top gaps */}
           {topCoverageGaps.length > 0 && (
             <div
               style={{
@@ -1526,7 +1532,7 @@ export default function PlanningRH({ adminState }) {
               <div style={{ display: "grid", gap: 6 }}>
                 {topCoverageGaps.map((g, i) => (
                   <div
-                    key={`${g.type}-${g.dayKey}-${g.slotKey}-${g.skill || "total"}-${i}`}
+                    key={`${g.type}-${g.dayKey}-${g.slotKey}-${g.skill || g.role || "total"}-${i}`}
                     style={{
                       borderRadius: 8,
                       border: "1px solid rgba(255,255,255,0.06)",
@@ -1543,7 +1549,6 @@ export default function PlanningRH({ adminState }) {
             </div>
           )}
 
-          {/* alertes compactes */}
           {compactAlerts.length > 0 ? (
             <div style={{ display: "grid", gap: 6 }}>
               {compactAlerts.map((a, i) => {
@@ -1650,6 +1655,73 @@ export default function PlanningRH({ adminState }) {
             ))}
           </div>
         </div>
+
+        {/* ✅ Patch poste actif par cellule */}
+        <div
+          style={{
+            marginTop: 12,
+            border: "1px solid rgba(255,255,255,0.08)",
+            background: "rgba(255,255,255,0.015)",
+            borderRadius: 12,
+            padding: 10,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+            🏷️ Poste actif sur la cellule sélectionnée (suffixe <code>/CODE</code>)
+          </div>
+
+          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 8, lineHeight: 1.45 }}>
+            Exemple : <b>06:00-13:30/PGC</b> • L’analyse comptera la personne sur <b>PGC</b> sur ce créneau.
+          </div>
+
+          <div
+            style={{
+              marginBottom: 8,
+              fontSize: 12,
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(255,255,255,0.02)",
+              padding: "8px 10px",
+            }}
+          >
+            {selectedCellInfo ? (
+              <>
+                <div>
+                  <b>Ligne:</b> {selectedCellInfo.rowName || "—"} • <b>Jour:</b>{" "}
+                  {selectedCellInfo.dayKey.toUpperCase()}
+                </div>
+                <div>
+                  <b>Cellule:</b> {selectedCellInfo.value || "vide"} • <b>Type:</b>{" "}
+                  {selectedCellInfo.parsed?.type || "unknown"} • <b>Suffixe:</b>{" "}
+                  {selectedCellInfo.activeCode || "—"}
+                </div>
+              </>
+            ) : (
+              <span>Selectionne une cellule du planning pour appliquer un poste actif.</span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {ACTIVE_SKILL_CODES.map((code) => (
+              <button
+                key={code}
+                style={ui.btn}
+                onClick={() => applyActiveSkillToSelection(code)}
+                title={`Appliquer /${code} à la cellule sélectionnée`}
+              >
+                /{code}
+              </button>
+            ))}
+
+            <button
+              style={ui.btnWarn}
+              onClick={clearActiveSkillFromSelection}
+              title="Retirer le suffixe /CODE de la cellule sélectionnée"
+            >
+              🧽 Retirer /CODE
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* KPI semaine (sur lignes affichées) */}
@@ -1677,7 +1749,7 @@ export default function PlanningRH({ adminState }) {
       {/* Grille planning */}
       <div style={{ ...ui.card, padding: 0 }} className="planning-grid-card">
         <div style={{ overflow: "auto", maxHeight: "70vh" }} className="planning-grid-scroll">
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1180 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1320 }}>
             <thead>
               <tr>
                 <th style={{ ...ui.th, left: 0, zIndex: 3, textAlign: "left", minWidth: 220 }}>
@@ -1695,7 +1767,7 @@ export default function PlanningRH({ adminState }) {
 
                 <th style={{ ...ui.th, minWidth: 80 }}>Heures</th>
                 <th style={{ ...ui.th, minWidth: 80 }}>Écart</th>
-                <th style={{ ...ui.th, minWidth: 140 }} className="planning-print-hide-col">Notes</th>
+                <th style={{ ...ui.th, minWidth: 160 }} className="planning-print-hide-col">Notes</th>
                 <th style={{ ...ui.th, minWidth: 64 }} className="planning-print-hide-col">Action</th>
               </tr>
             </thead>
@@ -1720,7 +1792,7 @@ export default function PlanningRH({ adminState }) {
 
                   return (
                     <tr key={row.id}>
-                      {/* Nom */}
+                      {/* Nom + rôle + skills fallback */}
                       <td
                         style={{
                           ...ui.td,
@@ -1764,12 +1836,12 @@ export default function PlanningRH({ adminState }) {
                                   border: "1px solid rgba(59,130,246,0.20)",
                                   background: "rgba(59,130,246,0.10)",
                                   opacity: 0.95,
-                                  maxWidth: 190,
+                                  maxWidth: 180,
                                   overflow: "hidden",
                                   textOverflow: "ellipsis",
                                   whiteSpace: "nowrap",
                                 }}
-                                title={`Skills: ${row.skills.join(", ")}`}
+                                title={`Skills fallback: ${row.skills.join(", ")}`}
                               >
                                 🧠 {row.skills.join(", ")}
                               </span>
@@ -1779,31 +1851,27 @@ export default function PlanningRH({ adminState }) {
                                   fontSize: 10,
                                   borderRadius: 999,
                                   padding: "2px 7px",
-                                  border: "1px dashed rgba(255,255,255,0.12)",
+                                  border: "1px solid rgba(255,255,255,0.08)",
                                   background: "rgba(255,255,255,0.02)",
-                                  opacity: 0.65,
+                                  opacity: 0.7,
                                 }}
-                                title="Aucune skill renseignée"
+                                title="Ces skills servent de fallback si la cellule n’a pas de suffixe /CODE"
                               >
-                                🧠 skills ?
+                                🧠 fallback vide
                               </span>
                             )}
                           </div>
 
-                          {/* ✅ PATCH SKILLS CSV */}
+                          {/* ✅ skills fallback CSV */}
                           <input
-                            style={{ ...ui.input, padding: "6px 8px", fontSize: 11 }}
-                            value={skillsToCsv(row.skills)}
-                            placeholder="Skills (csv) : pgc, fs, mes"
+                            style={{ ...ui.input, padding: "5px 8px", fontSize: 11 }}
+                            value={skillsArrayToCsv(row.skills)}
+                            placeholder="Skills fallback (CSV) ex: PGC, FS, MES"
                             onChange={(e) =>
-                              upsertRow(row.id, { skills: parseSkillsCsvInput(e.target.value) })
+                              upsertRow(row.id, { skills: skillsCsvToArray(e.target.value) })
                             }
-                            title={`Skills (CSV) — clés conseillées: ${DRIVE_SKILL_KEYS.join(", ")}`}
+                            title="Compétences fallback si aucun suffixe /CODE n’est renseigné dans les cellules"
                           />
-                          <div style={{ fontSize: 10, opacity: 0.65, lineHeight: 1.2 }}>
-                            ex: <code>pgc, fs, mes</code> • <code>accueil, liv</code> •{" "}
-                            <code>fleg/surg, re, net</code>
-                          </div>
                         </div>
                       </td>
 
@@ -1875,7 +1943,6 @@ export default function PlanningRH({ adminState }) {
                                 onChange={(e) => setCell(row.id, dayKey, e.target.value)}
                               />
 
-                              {/* Preview split pour impression murale (créneau + badge code séparés) */}
                               <div
                                 className={`planning-cell-print-preview kind-${printable.kind}`}
                                 aria-hidden="true"
@@ -1954,7 +2021,7 @@ export default function PlanningRH({ adminState }) {
         <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 15 }}>💡 Aide de saisie</h2>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
           <span style={pill("work")}>Shift : 06:00-13:30</span>
-          <span style={pill("work")}>Shift + badge : 06:00-13:30/DRIVE</span>
+          <span style={pill("work")}>Shift + badge : 06:00-13:30/PGC</span>
           <span style={pill("rest")}>RH / OFF</span>
           <span style={pill("cp")}>CP</span>
           <span style={pill("alert")}>AT / MAL / ABS</span>
@@ -1962,13 +2029,12 @@ export default function PlanningRH({ adminState }) {
 
         <div style={{ marginTop: 10, opacity: 0.8, fontSize: 12, lineHeight: 1.45 }}>
           • Les heures se calculent automatiquement à partir des formats <b>HH:MM-HH:MM</b>.<br />
-          • Tu peux ajouter un badge suffixe (ex. <b>/DRIVE</b>, <b>/CAISSE</b>) pour l’affichage mural.<br />
+          • Le suffixe <b>/CODE</b> (ex: <b>/PGC</b>, <b>/FS</b>, <b>/MES</b>) sert à l’analyse de couverture par compétence.<br />
+          • Priorité analyse: <b>suffixe cellule</b> → puis <b>skills fallback collaborateur</b>.<br />
           • Les codes RH / CP / OFF / AT / MAL / ABS ne comptent pas d’heures.<br />
-          • Sélectionne une cellule puis utilise les boutons “Affectation rapide”.<br />
+          • Sélectionne une cellule puis utilise “Affectation rapide” et/ou “Poste actif sur cellule”.<br />
           • Le panneau Analyse Sprint 3 lit tes utilitaires si disponibles, sinon fallback local.<br />
-          • Les besoins par créneau / compétences / coûts s’activent via <b>doc.config</b> (optionnel).<br />
-          • ✅ Skills collaborateurs à saisir par ligne (CSV) :{" "}
-          <code>{DRIVE_SKILL_KEYS.join(", ")}</code>
+          • Les besoins par créneau / compétences / coûts s’activent via <b>doc.config</b> (optionnel).
         </div>
       </div>
 
@@ -2092,12 +2158,10 @@ export default function PlanningRH({ adminState }) {
             background: #fff !important;
           }
 
-          /* inputs de saisie masqués uniquement sur cellules planning */
           .planning-rh-page .planning-cell-input {
             display: none !important;
           }
 
-          /* mais conserver lisibilité nom/contrat/notes/skills via styles existants */
           .planning-rh-page td input:not(.planning-cell-input) {
             border: none !important;
             background: transparent !important;
@@ -2111,7 +2175,6 @@ export default function PlanningRH({ adminState }) {
             color: transparent !important;
           }
 
-          /* preview impression mural */
           .planning-rh-page .planning-cell-print-preview {
             display: flex !important;
             flex-direction: column !important;
